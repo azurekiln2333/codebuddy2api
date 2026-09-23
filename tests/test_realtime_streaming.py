@@ -48,6 +48,38 @@ def _events(raw):
     return result
 
 
+def _serial_blocks(test, raw, *, complete=True):
+    active = None
+    blocks = []
+    for event in _events(raw):
+        kind = event["type"]
+        if kind == "content_block_start":
+            test.assertIsNone(active, event)
+            active = event["index"]
+            test.assertEqual(active, len(blocks))
+            blocks.append({**event["content_block"], "_pieces": [], "_closed": False})
+        elif kind == "content_block_delta":
+            test.assertEqual(event["index"], active)
+            delta = event["delta"]
+            field = {"text_delta": "text", "thinking_delta": "thinking",
+                     "input_json_delta": "partial_json"}[delta["type"]]
+            blocks[active]["_pieces"].append(delta[field])
+        elif kind == "content_block_stop":
+            test.assertEqual(event["index"], active)
+            block = blocks[active]
+            value = "".join(block["_pieces"])
+            block["input" if block["type"] == "tool_use" else block["type"]] = (
+                json.loads(value) if block["type"] == "tool_use" else value)
+            block["_closed"] = True
+            active = None
+        elif kind in ("message_delta", "message_stop"):
+            test.assertIsNone(active)
+    if complete:
+        test.assertIsNone(active)
+        test.assertTrue(all(block["_closed"] for block in blocks))
+    return blocks
+
+
 class _PausedLines:
     def __init__(self, first, tail, at_boundary):
         self.first = first
@@ -545,6 +577,46 @@ class RealtimeTransportTests(unittest.IsolatedAsyncioTestCase):
                             self.assertIn(b"end_turn", wire)
 
 
+    async def test_messages_parallel_block_queue_keeps_first_tool_live_before_eof(self):
+        before, wire = await self.drive("messages", "realtime", True, first_delta={"tool_calls": [
+            {"index": 0, "id": "first", "function": {"name": "synthetic_tool", "arguments": '{"x":'}},
+            {"index": 1, "id": "second", "function": {"name": "synthetic_tool", "arguments": '{}'}}]})
+        blocks = _serial_blocks(self, before.decode(), complete=False)
+        self.assertEqual([block["id"] for block in blocks], ["first"])
+        self.assertEqual(blocks[0]["_pieces"], ['{"x":'])
+        self.assertNotIn(b"message_stop", before)
+        blocks = _serial_blocks(self, wire.decode())
+        self.assertEqual([block["input"] for block in blocks], [{"x": 1}, {}])
+        self.assertIn(b"message_stop", wire)
+
+    async def test_messages_deferred_budget_failure_closes_upstream_without_replay(self):
+        closed = False
+        attempts = []
+        @asynccontextmanager
+        async def backend(*args, **kwargs):
+            nonlocal closed
+            attempts.append(1)
+            try:
+                yield _FixedResponse([
+                    _line({"tool_calls": [{"index": 0, "id": "first", "function": {
+                        "name": "synthetic_tool", "arguments": "{}"}}]}, usage={"total_tokens": 4}),
+                    _line({"tool_calls": [{"index": 1, "id": "second", "function": {
+                        "name": "synthetic_tool", "arguments": "{}"}}]}),
+                    _line({}, "tool_calls")])
+            finally:
+                closed = True
+        with patch.object(converter, "observe_usage") as usage:
+            sent = await self.asgi_post("/v1/messages", self.payload("messages", True), backend,
+                                        config={"stream_mode": "realtime", "max_collect_bytes": 120})
+        self.assertTrue(closed)
+        self.assertEqual(len(attempts), 1)
+        usage.assert_any_call({"total_tokens": 4})
+        wire = b"".join(event.get("body", b"") for event in sent)
+        self.assertIn(b"response_too_large", wire)
+        self.assertNotIn(b"message_stop", wire)
+        self.assertEqual(len(_serial_blocks(self, wire.decode(), complete=False)), 1)
+
+
     async def test_realtime_budget_error_after_output_has_no_success_terminal(self):
         for protocol in ("chat", "responses", "messages"):
             with self.subTest(protocol=protocol):
@@ -692,6 +764,65 @@ class RealtimeAdapterTests(unittest.TestCase):
         tracker.feed_line(raw)
         return converter.feed_line(raw)
 
+    def test_messages_serializes_parallel_tools_and_following_text_thinking(self):
+        for shared in (False, True):
+            with self.subTest(shared_tool_state=shared):
+                _, tracker, _, adapter = self.realtime_converters()
+                if not shared:
+                    adapter = AnthropicStreamConverter(realtime=True)
+                def feed(delta, finish=None):
+                    return self.feed_pair(tracker, adapter, delta, finish)
+                raw = feed({"tool_calls": [{"index": 0, "id": "first",
+                    "function": {"name": "synthetic_tool", "arguments": '{"a":'}}]})
+                blocked = feed({"tool_calls": [{"index": 1, "id": "second",
+                    "function": {"name": "synthetic_tool", "arguments": '{"b":'}}]})
+                blocked += feed({"reasoning_content": "later-thought"})
+                blocked += feed({"content": "later-text"})
+                self.assertEqual(blocked, "")
+                active_delta = feed({"tool_calls": [{"index": 0, "function": {"arguments": '1}'}}]})
+                self.assertIn('1}', active_delta)
+                raw += active_delta
+                self.assertEqual(len(_serial_blocks(self, raw, complete=False)), 1)
+                self.assertEqual(feed({"tool_calls": [{"index": 1, "function": {"arguments": '2}'}}]}), "")
+                raw += feed({}, "tool_calls")
+                adapter.set_validated_tools(tracker.result()["tool_calls"])
+                raw += adapter.finish()
+                blocks = _serial_blocks(self, raw)
+                self.assertEqual([b["type"] for b in blocks], ["tool_use", "tool_use", "thinking", "text"])
+                self.assertEqual([b["input"] for b in blocks[:2]], [{"a": 1}, {"b": 2}])
+                self.assertEqual(blocks[2]["thinking"], "later-thought")
+                self.assertEqual(blocks[3]["text"], "later-text")
+
+    def test_messages_delayed_identity_does_not_hold_unrelated_text(self):
+        _, tracker, _, adapter = self.realtime_converters()
+        raw = self.feed_pair(tracker, adapter, {"tool_calls": [
+            {"index": 0, "function": {"arguments": '{"v":1}'}}]})
+        text = self.feed_pair(tracker, adapter, {"content": "visible-now"})
+        self.assertIn("visible-now", text)
+        raw += text
+        raw += self.feed_pair(tracker, adapter, {"tool_calls": [
+            {"index": 0, "id": "late", "function": {"name": "synthetic_tool"}}]})
+        raw += self.feed_pair(tracker, adapter, {}, "tool_calls")
+        adapter.set_validated_tools(tracker.result()["tool_calls"])
+        raw += adapter.finish()
+        blocks = _serial_blocks(self, raw)
+        self.assertEqual([b["type"] for b in blocks], ["text", "tool_use"])
+        self.assertEqual(blocks[1]["input"], {"v": 1})
+
+    def test_messages_deferred_event_bytes_share_the_request_budget(self):
+        budget = StreamOutputBudget(120)
+        tracker = ChatSSEAccumulator(collect=False, retain_tools=True, budget=budget)
+        adapter = AnthropicStreamConverter(realtime=True, budget=budget, tool_states=tracker.tools)
+        self.feed_pair(tracker, adapter, {"tool_calls": [
+            {"index": 0, "id": "a", "function": {"name": "t", "arguments": '{}'}}]})
+        next_tool = _line({"tool_calls": [
+            {"index": 1, "id": "b", "function": {"name": "t", "arguments": '{}'}}]})
+        tracker.feed_line(next_tool)
+        with self.assertRaises(UpstreamResponseError) as raised:
+            adapter.feed_line(next_tool)
+        self.assertIn(b"response_too_large", raised.exception.raw)
+
+
     def test_responses_uses_first_seen_order_and_never_reuses_an_index(self):
         _, tracker, converter, _ = self.realtime_converters()
         raw = ""
@@ -793,7 +924,8 @@ class RealtimeAdapterTests(unittest.TestCase):
         self.assertEqual(arguments[1], ['{"x":', "1}"])
         self.assertEqual(arguments[2], ['{"y":', "2}"])
         stops = [event["index"] for event in events if event["type"] == "content_block_stop"]
-        self.assertEqual(stops, [0, 3, 4, 1, 2])
+        self.assertEqual(stops, [0, 1, 2, 3, 4])
+        _serial_blocks(self, raw)
 
     def test_responses_tool_start_and_done_reconstruct_arguments_once(self):
         complete = [
@@ -1127,6 +1259,7 @@ class RealtimeAuditTests(unittest.TestCase):
         with patch.dict(converter.CONFIG, config), patch.object(converter, "_backend_stream", backend), \
              patch.object(converter, "_log"), patch.object(converter, "_note_cred_model_ok"):
             client = self.enterContext(TestClient(application))
+            seen = set()
             for protocol in ("chat", "responses", "messages"):
                 for mode in ("compatible", "realtime"):
                     for stream in (None, False, True):
@@ -1145,7 +1278,10 @@ class RealtimeAuditTests(unittest.TestCase):
                             with patch.object(converter, "_route_chat", side_effect=route):
                                 response = client.post(path, json=body)
                             self.assertEqual(response.status_code, 200, response.text)
-                            record = store.list_records()["items"][0]
+                            records = [item for item in store.list_records()["items"] if item["id"] not in seen]
+                            self.assertEqual(len(records), 1)
+                            record = records[0]
+                            seen.add(record["id"])
                             self.assertEqual(record["stream_mode"], mode)
                             self.assertEqual(record["outcome"], "success")
 

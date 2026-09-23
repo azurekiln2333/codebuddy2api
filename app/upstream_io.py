@@ -36,7 +36,7 @@ MAX_TOOL_CALLS = 256
 
 
 class StreamOutputBudget:
-    """Account for each logical output fragment once across realtime validators and adapters."""
+    """Bound retained output and deferred protocol events across validators and adapters."""
 
     def __init__(self, max_bytes: int = 0):
         self.max_bytes = max(0, int(max_bytes or 0))

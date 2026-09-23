@@ -268,6 +268,8 @@ class AnthropicStreamConverter:
         # Tool blocks indexed by upstream call position.
         self._tool_uses: dict[int, dict] = {}
         self._next_block_idx = 0
+        self._active_wire_block: int | None = None
+        self._deferred_blocks: dict[int, dict] = {}
 
         # Completion metadata
         self._finish_reason: str | None = None
@@ -628,7 +630,49 @@ class AnthropicStreamConverter:
     def _evt(self, event_type: str, data: dict) -> str:
         """Format an Anthropic SSE event with its event name."""
         payload = {"type": event_type, **data}
-        return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        wire = f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        if self._realtime:
+            if event_type.startswith("content_block_"):
+                return self._serialize_block_event(event_type, data["index"], wire)
+            if event_type in ("message_delta", "message_stop") and (
+                    self._active_wire_block is not None or self._deferred_blocks):
+                raise ValueError("message ended before content blocks closed")
+        return wire
+
+    def _serialize_block_event(self, kind: str, index: int, wire: str) -> str:
+        """Keep one downstream block open; later blocks wait within the shared budget."""
+        if kind == "content_block_start":
+            if index == self._active_wire_block or index in self._deferred_blocks:
+                raise ValueError("duplicate content block start")
+            if self._active_wire_block is None:
+                self._active_wire_block = index
+                return wire
+            self._budget.charge_text(wire)
+            self._deferred_blocks[index] = {"events": [wire], "closed": False}
+            return ""
+
+        if index == self._active_wire_block:
+            if kind != "content_block_stop":
+                return wire
+            self._active_wire_block = None
+            ready = [wire]
+            while self._deferred_blocks:
+                next_index = next(iter(self._deferred_blocks))
+                block = self._deferred_blocks.pop(next_index)
+                ready.extend(block["events"])
+                if not block["closed"]:
+                    self._active_wire_block = next_index
+                    break
+            return "".join(ready)
+
+        block = self._deferred_blocks.get(index)
+        if block is None or block["closed"]:
+            raise ValueError("content event outside its block lifecycle")
+        self._budget.charge_text(wire)
+        block["events"].append(wire)
+        if kind == "content_block_stop":
+            block["closed"] = True
+        return ""
 
     def _build_content_blocks(self) -> list[dict]:
         """Build content blocks for a non-streaming response."""
