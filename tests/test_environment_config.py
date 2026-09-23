@@ -136,6 +136,23 @@ class EnvironmentConfigTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.start({'CODEBUDDY2API_MODEL_CAPABILITY_GUARD': 'invalid'})
 
+    def test_stream_mode_precedence_validation_and_hot_schema(self):
+        _, items, config = self.start(saved={'stream_mode': 'realtime'})
+        self.assertEqual(config['stream_mode'], 'realtime')
+        self.assertEqual(items['stream_mode']['source'], 'management')
+        self.assertEqual(items['stream_mode']['choices'], ['compatible', 'realtime'])
+        self.assertFalse(items['stream_mode']['locked'])
+        _, items, config = self.start({'CODEBUDDY2API_STREAM_MODE': 'compatible'})
+        self.assertEqual(config['stream_mode'], 'compatible')
+        self.assertEqual(items['stream_mode']['source'], 'environment')
+        self.assertTrue(items['stream_mode']['locked'])
+        _, items, config = self.start({'CODEBUDDY2API_STREAM_MODE': 'invalid'},
+                                      cli=('--stream-mode=realtime',), saved={'stream_mode': 'compatible'})
+        self.assertEqual(config['stream_mode'], 'realtime')
+        self.assertEqual(items['stream_mode']['source'], 'cli')
+        with self.assertRaises(ValueError):
+            self.start({'CODEBUDDY2API_STREAM_MODE': 'invalid'})
+
     def test_admin_allowed_origins_precedence_normalization_and_locking(self):
         key = 'CODEBUDDY2API_ADMIN_ORIGINS'
         self.assertEqual(self.start()[2]['admin_allowed_origins'], '')
@@ -204,7 +221,7 @@ class EnvironmentConfigTests(unittest.TestCase):
                   'CODEBUDDY2API_MAX_CONCURRENT': '2', 'CODEBUDDY2API_TOOL_CALL_MAX_RETRY': '1',
                   'CODEBUDDY2API_FAILOVER_MAX': '1', 'CODEBUDDY2API_RETRY_WRITE_TIMEOUT': 'true',
                   'CODEBUDDY2API_UPSTREAM_KEEPALIVE': 'true', 'CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT': '2',
-                  'CODEBUDDY2API_REQUEST_CONTEXT_MODE': 'scoped',
+                  'CODEBUDDY2API_REQUEST_CONTEXT_MODE': 'scoped', 'CODEBUDDY2API_STREAM_MODE': 'realtime',
                   'CODEBUDDY2API_MODEL_CAPABILITY_GUARD': 'false',
                   'CODEBUDDY2API_ADMIN_ORIGINS': 'https://chat.example.com',
                   'CODEBUDDY2API_KEEP_TOOL_METADATA': 'false', 'CODEBUDDY_IMPORT_DIR': '/data/auth/incoming'}
@@ -221,7 +238,8 @@ class EnvironmentConfigTests(unittest.TestCase):
         service = self.compose({})
         for name in ('CODEBUDDY2API_KEEP_TOOL_METADATA', 'CODEBUDDY2API_FAILOVER_MAX', 'CODEBUDDY2API_RETRY_WRITE_TIMEOUT',
                      'CODEBUDDY2API_UPSTREAM_KEEPALIVE', 'CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT',
-                     'CODEBUDDY2API_REQUEST_CONTEXT_MODE', 'CODEBUDDY2API_MODEL_CAPABILITY_GUARD',
+                     'CODEBUDDY2API_REQUEST_CONTEXT_MODE', 'CODEBUDDY2API_STREAM_MODE',
+                     'CODEBUDDY2API_MODEL_CAPABILITY_GUARD',
                      'CODEBUDDY2API_ADMIN_ORIGINS'):
             self.assertIsNone(service['environment'].get(name))
         self.assertEqual(service['ports'][0]['host_ip'], '127.0.0.1')

@@ -32,7 +32,8 @@ Compose explicitly passes some environment variables and CLI flags, so deleting 
 | `--image-policy` | `truncate` | Keep newest images; `error` rejects excess images with 413 |
 | `--tool-call-max-retry` | `3` | Extra generations after malformed tool calls (each consumes credits); `0` disables retries |
 | `--max-inbound-bytes` | `67108864` | Raw body limit for generation and token-count POSTs, before parsing (chunked included); other routes are not buffered; 413 beyond it |
-| `--max-collect-bytes` | `8388608` | Total collection budget for aggregated output (content + reasoning + tool arguments); `response_too_large` beyond it; `0` disables |
+| `--max-collect-bytes` | `8388608` | Total retained-output budget for aggregation and realtime validation (content + reasoning + tool arguments/metadata); `response_too_large` beyond it; `0` disables |
+| `--stream-mode compatible\|realtime` | `compatible` | `compatible` preserves aggregate/replay behavior; `realtime` incrementally streams all three protocols and does not regenerate tool arguments |
 | `--max-concurrent` | `64` | Concurrency limit for the three generation endpoints only; excess requests get 503 with Retry-After; token counting is unaffected; `0` disables |
 | `--max-inflight-per-account` | `0` | Per-process, per-account in-flight client inference limit; `0` disables, full accounts return 503 |
 | `--upstream-keepalive [true/false]` | `false` | Bounded connection reuse isolated by official origin; requires restart |
@@ -42,7 +43,7 @@ Compose explicitly passes some environment variables and CLI flags, so deleting 
 | `--max-request-bytes` | `33554432` | Positive byte limit for the processed upstream JSON |
 | `--log-body-limit` | `65536` | Legacy text-preview option; text output is retired and SQLite diagnostics use their own budget |
 
-Environment variables include `CODEBUDDY_AUTH_DIR`, `CODEBUDDY_IMPORT_DIR`, `CODEBUDDY2API_KEY`, `CODEBUDDY2API_ADMIN_CSRF`, `CODEBUDDY2API_ADMIN_ORIGINS`, `CODEBUDDY2API_KEEP_TOOL_METADATA`, `CODEBUDDY2API_LOG`, `CODEBUDDY2API_MAX_IMAGES`, `CODEBUDDY2API_IMAGE_POLICY`, `CODEBUDDY2API_MAX_REQUEST_BYTES`, `CODEBUDDY2API_LOG_BODY_LIMIT`, `CODEBUDDY2API_FAILOVER_MAX` and `CODEBUDDY2API_RETRY_WRITE_TIMEOUT`. See [deployment](deployment.md) for startup examples.
+Environment variables include `CODEBUDDY_AUTH_DIR`, `CODEBUDDY_IMPORT_DIR`, `CODEBUDDY2API_KEY`, `CODEBUDDY2API_ADMIN_CSRF`, `CODEBUDDY2API_ADMIN_ORIGINS`, `CODEBUDDY2API_KEEP_TOOL_METADATA`, `CODEBUDDY2API_STREAM_MODE`, `CODEBUDDY2API_LOG`, `CODEBUDDY2API_MAX_IMAGES`, `CODEBUDDY2API_IMAGE_POLICY`, `CODEBUDDY2API_MAX_REQUEST_BYTES`, `CODEBUDDY2API_LOG_BODY_LIMIT`, `CODEBUDDY2API_FAILOVER_MAX` and `CODEBUDDY2API_RETRY_WRITE_TIMEOUT`. See [deployment](deployment.md) for startup examples.
 
 ### Tool metadata retention
 
@@ -53,6 +54,46 @@ Off by default, preserving the existing policy: desensitization strips tool desc
 - **Environment:** set `CODEBUDDY2API_KEEP_TOOL_METADATA=true`. Compose passes it only when set, leaving the WebUI unlocked otherwise. Remove or comment out the variable to remove the environment lock; do not set an empty string.
 
 Use a source/image build and Compose configuration containing this feature; recreate containers after changing their environment. Retained descriptions may increase input tokens and content-filter rejections; compatibility across accounts/models is not guaranteed. Set `false` to restore the previous policy. This option does not restore other schema fields or deep nodes removed by existing Responses projection, nor relax the request-size budget.
+
+### Streaming modes
+
+`stream_mode` defaults to `compatible`. Configure it as `--stream-mode compatible|realtime`, `CODEBUDDY2API_STREAM_MODE`, or the hot **Streaming mode / 实时模式** enum in the WebUI. Explicit CLI and environment sources lock the WebUI field. The selected value and `max_collect_bytes` are frozen when each request starts, so a hot change affects only later requests and never an in-flight failover path. There is no per-request override.
+
+- `compatible` preserves existing behavior: Responses streams aggregate first; Chat and Messages aggregate when tools are present and otherwise pass through upstream increments. Aggregated output is validated and replayed in fragments. Non-stream requests always use the validated aggregate path in either mode.
+- `realtime` forwards reasoning, text, refusal and tool-argument increments for all three protocols. Responses assigns stable indexes when items start; Anthropic uses stable block indexes. Adapters buffer tools with missing identity until the argument phase or terminal marker, append metadata fragments without guessing from prefixes, and reject identity changes after an item starts. `max_collect_bytes` bounds retained UTF-8 output; `0` disables that limit.
+
+Realtime mode never regenerates malformed or incomplete tool arguments. Tool IDs, names, declared names, JSON-object arguments and `tool_choice` are checked at the terminal boundary before a success terminal is sent. In realtime, a tool-bearing completion must also carry the upstream `tool_calls` finish marker; a `stop` marker with tool calls is rejected, while compatible mode keeps its legacy acceptance behavior. Before any downstream byte, failures retain the upstream HTTP error and existing bounded pre-response failover rules. After any byte, malformed tools, disconnects, stream errors and budget overflow produce a protocol error terminal without credential replay or switching; valid `length`, refusal and content-filter results keep their native protocol distinctions (Responses reports truncation/filtering as `incomplete`, never `completed`) and are not regenerated. Clients must therefore accept partial output followed by an error rather than assuming every opened SSE stream completes successfully. Audit records retain only an allowlisted `stream_mode` marker plus available upstream usage.
+
+For runtime fallback, select `compatible` to restore aggregate streaming and tool-argument repair without changing saved state. Before running older source, remove the new CLI/environment option, stop the gateway and back up the **current** data directory, including its SQLite/WAL/SHM generation. Do not restore a stale pre-upgrade database: that could roll back newer claims, sessions, revocations and account state. The following offline procedure writes only the removal of `settings.stream_mode` and a revision increment, then checks integrity; all other settings and tables remain intact. Never run it against a live database or mix SQLite generations.
+
+```sh
+python3 - /path/to/control.sqlite3 <<'PY'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+try:
+    con.execute("BEGIN IMMEDIATE")
+    row = con.execute("SELECT revision,payload FROM control WHERE id=1").fetchone()
+    if row is None:
+        raise SystemExit("missing control row")
+    revision, payload = row
+    data = json.loads(payload)
+    if set(data) != {"settings", "models", "credentials"} or not isinstance(data["settings"], dict):
+        raise SystemExit("unexpected control payload")
+    if "stream_mode" not in data["settings"]:
+        raise SystemExit("stream_mode is absent; no write needed")
+    del data["settings"]["stream_mode"]
+    con.execute("UPDATE control SET revision=?,payload=? WHERE id=1",
+                (revision + 1, json.dumps(data, ensure_ascii=False, allow_nan=False)))
+    con.commit()
+    if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+        raise SystemExit("integrity check failed")
+finally:
+    con.close()
+print("ok")
+PY
+```
+
+Older strict setting validators reject the unknown saved key, so changing only its value does not make old source compatible. This procedure is intentionally offline and operator-scoped; do not perform it on production without a current backup and a stopped service.
 
 ### Connection reuse and account capacity
 
@@ -186,7 +227,7 @@ Both international profiles merge image-bearing consecutive `user` runs only aft
 - Images count across all history and tool results, including duplicates, in message/content array order. The default keeps the newest 16, removing only excess images while retaining text and message structure; emptied image content receives a text placeholder.
 - `--image-policy error` returns local `413 / too_many_images`. JSON still over budget after processing returns `413 / request_too_large`, without further text truncation to fit the limit.
 - Image count does not guarantee acceptable individual image sizes or model vision support. URL/base64 images can be converted; Responses image `file_id` is unsupported.
-- When `stream` is omitted all three endpoints follow the protocol default and return a complete JSON response; `stream` must be a boolean. Streaming Responses and Chat/Messages with tools aggregate and validate before emitting SSE; not every path forwards tokens in real time.
+- With `stream_mode=compatible` (the default), streaming Responses and Chat/Messages with tools aggregate and validate before emitting SSE; Chat/Messages without tools pass through upstream increments. `realtime` streams all three incrementally, while omitted/non-stream requests remain complete validated JSON.
 - Inference errors follow the client protocol: OpenAI routes return a top-level `error` object and Messages returns `{"type": "error", ...}`. Status codes are retained; errors after streaming starts are reported through SSE without replay.
 - Valid upstream `Retry-After` values (0–86400 seconds or equivalent HTTP dates) are returned as seconds before streaming starts; 429 only cools the selected account/model. Invalid or expired values fall back to the body's reset time or 600 seconds. Pool-generated 429 responses include the remaining wait.
 - Chat and Responses preserve an explicit client `prompt_cache_key` without generating one; cache hits and savings depend on the upstream.
@@ -221,7 +262,7 @@ Both international profiles merge image-bearing consecutive `user` runs only aft
 | Streaming request fails before the first byte | Reported with the real HTTP status, exactly like `stream=false`. A 200 carrying only an in-band `error` event is read by clients as an empty answer, so the session ends silently while the audit log records a success |
 | Credential failover (`--failover-max`) | Off by default. When enabled, a failure before any byte reached the client is retried on another credential up to N times and audited as `success` with a `failover_recovered` marker. Qualifying failures: upstream HTTP 401/403/429/502/503/504 rejections and bodies the upstream provably never received (`ConnectError`/`ConnectTimeout`). Content-filter rejections, 502s from an already-open stream, read timeouts and protocol errors are never replayed; without another credential the original status surfaces. Billing note: 401/403/429/503 and transport failures happen at admission and cannot be billed; a 502/504 may already have been billed upstream, but its result never reached the client, so refusing to replay recovers no credit — it only turns a paid-for attempt into a broken session. Such replays are tagged `上游可能已处理该请求` in the log for reconciliation |
 | Write-timeout replay (`--retry-write-timeout`) | Off by default. A write timeout proves the body was not fully sent, not that the upstream ignored the bytes it received, so it stays excluded from connect retry and failover until enabled. Long cross-border sessions fail here more often than in the handshake; enable only when the upstream is confirmed not to bill partial bodies. These replays carry the same `上游可能已处理该请求` log tag |
-| Malformed tool calls | Aggregate validation permits up to `--tool-call-max-retry` (default 3) additional generations, each consuming credits and recorded with its usage in the attempt details; exhaustion returns an error |
+| Malformed tool calls | Compatible aggregate validation permits up to `--tool-call-max-retry` (default 3) additional generations, each consuming credits and recorded with its usage in the attempt details; exhaustion returns an error. Realtime mode never regenerates: it reports a protocol error before a success terminal |
 | Empty or truncated upstream stream | No valid output, a missing end marker or an error is not reported as success |
 | Content-filter rejection | With desensitization and `--no-compact`, a complete non-streaming filter-only rejection may receive one shorter-template retry on the same account. No streaming filter retry, circuit opening or account rotation |
 | Slow responses | Inspect timing and failed attempts in the WebUI, then choose a faster model supported by the account |
@@ -229,4 +270,4 @@ Both international profiles merge image-bearing consecutive `user` runs only aft
 
 ## Downgrades and rollback
 
-Feature switches hold no hidden state: disabling a guard or mode stops it for new requests, and reverting source restores previous behavior. The exceptions are persisted settings and automation state: `control.sqlite3` stores WebUI settings, model rules and reward reservations, and older code rejects unknown fields. Before downgrading source, remove newly added startup options and restore a control-store backup from before the upgrade, including its WAL/SHM files without mixing. Rollback never undoes completed upstream check-ins, claims or travel dispatches.
+Feature switches hold no hidden state: disabling a guard or mode stops it for new requests, and reverting source restores previous behavior. The exceptions are persisted settings and automation state: `control.sqlite3` stores WebUI settings, model rules and reward reservations, and older code rejects unknown fields. Before downgrading source, remove newly added startup options, stop the service, back up the **current** data directory, and use the narrowly scoped offline `settings.stream_mode` removal procedure above with a revision increment and integrity check. Do not restore a pre-upgrade database or mix WAL/SHM generations: doing so could roll back newer claims, sessions, revocations and account state. Rollback never undoes completed upstream check-ins, claims or travel dispatches.

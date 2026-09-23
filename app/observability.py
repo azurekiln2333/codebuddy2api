@@ -130,6 +130,13 @@ class _Observation:
                     self.output()
 
 
+def observe_stream_mode(mode):
+    """Attach one allowlisted request marker without consuming bounded attempt diagnostics."""
+    observation = _current.get()
+    if observation is not None and mode in ("compatible", "realtime"):
+        observation.record["stream_mode"] = mode
+
+
 def observe_route(public_model, upstream_model, profile, credential):
     observation = _current.get()
     if observation is not None:

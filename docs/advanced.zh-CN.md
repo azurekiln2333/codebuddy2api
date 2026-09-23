@@ -32,7 +32,8 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 | `--image-policy` | `truncate` | 保留最新图片；设为 `error` 时超限返回 413 |
 | `--tool-call-max-retry` | `3` | 工具参数损坏时的额外生成上限（每次都消耗额度）；`0` 不重试 |
 | `--max-inbound-bytes` | `67108864` | 生成及 token 估算 POST 的解析前原始字节上限（含 chunked），超限 413；其他路由不缓冲请求体 |
-| `--max-collect-bytes` | `8388608` | 聚合路径输出收集总字节上限（正文+思考+工具参数），超限返回 `response_too_large`；`0` 不限制 |
+| `--max-collect-bytes` | `8388608` | 聚合及实时校验所需保留输出的总字节上限（正文+思考+工具参数/元数据），超限返回 `response_too_large`；`0` 不限制 |
+| `--stream-mode compatible\|realtime` | `compatible` | `compatible` 保持聚合/片段重放行为；`realtime` 让三个协议增量发送，且不重生成工具参数 |
 | `--max-concurrent` | `64` | 仅限制三个生成端点；占满立即 503（含 Retry-After），不限制 token 估算；`0` 不限制 |
 | `--max-inflight-per-account` | `0` | 每进程、每账号的客户端推理在途上限；`0` 不限制，满载立即 503 |
 | `--upstream-keepalive [true/false]` | `false` | 启用按官方入口隔离的有界连接复用；重启生效 |
@@ -42,7 +43,7 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 | `--max-request-bytes` | `33554432` | 处理后的上游 JSON 字节上限，须为正整数 |
 | `--log-body-limit` | `65536` | 旧文本预览兼容项；文本输出已停用，SQLite 诊断使用独立预算 |
 
-环境变量包括 `CODEBUDDY_AUTH_DIR`、`CODEBUDDY_IMPORT_DIR`、`CODEBUDDY2API_KEY`、`CODEBUDDY2API_ADMIN_CSRF`、`CODEBUDDY2API_ADMIN_ORIGINS`、`CODEBUDDY2API_KEEP_TOOL_METADATA`、`CODEBUDDY2API_LOG`，以及 `CODEBUDDY2API_MAX_IMAGES`、`CODEBUDDY2API_IMAGE_POLICY`、`CODEBUDDY2API_MAX_REQUEST_BYTES`、`CODEBUDDY2API_LOG_BODY_LIMIT`、`CODEBUDDY2API_FAILOVER_MAX`、`CODEBUDDY2API_RETRY_WRITE_TIMEOUT`。启动示例见[部署指南](deployment.zh-CN.md)。
+环境变量包括 `CODEBUDDY_AUTH_DIR`、`CODEBUDDY_IMPORT_DIR`、`CODEBUDDY2API_KEY`、`CODEBUDDY2API_ADMIN_CSRF`、`CODEBUDDY2API_ADMIN_ORIGINS`、`CODEBUDDY2API_KEEP_TOOL_METADATA`、`CODEBUDDY2API_STREAM_MODE`、`CODEBUDDY2API_LOG`，以及 `CODEBUDDY2API_MAX_IMAGES`、`CODEBUDDY2API_IMAGE_POLICY`、`CODEBUDDY2API_MAX_REQUEST_BYTES`、`CODEBUDDY2API_LOG_BODY_LIMIT`、`CODEBUDDY2API_FAILOVER_MAX`、`CODEBUDDY2API_RETRY_WRITE_TIMEOUT`。启动示例见[部署指南](deployment.zh-CN.md)。
 
 ### 工具元数据保留
 
@@ -53,6 +54,46 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 - **环境变量**：设置 `CODEBUDDY2API_KEEP_TOOL_METADATA=true`；Compose 会传入已设置的值，未设置时不锁定 WebUI。删除或注释变量可解除环境锁定，不要设为空串。
 
 需使用包含此功能的源码/镜像和 Compose 配置；修改容器环境后重新创建容器。保留描述可能增加输入 token 和审核拦截风险，不保证所有账号/模型都同样兼容；设为 `false` 可恢复旧策略。此开关不恢复 Responses 原有投影裁掉的其他 schema 字段或深层节点，也不放宽请求体预算。
+
+### 流式模式
+
+`stream_mode` 默认 `compatible`，可通过 `--stream-mode compatible|realtime`、`CODEBUDDY2API_STREAM_MODE` 或 WebUI 热更新枚举「流式模式」配置。显式 CLI/环境来源会锁定 WebUI 项。每个请求入口都会冻结此选择及 `max_collect_bytes`，因此热更新只影响后续请求，不改变在途流或其换号路径；客户端不能按请求覆盖。
+
+- `compatible` 保持现有行为：Responses 流式先聚合；Chat/Messages 带工具时先聚合，无工具时沿用上游增量。聚合结果先校验，再按片段重放。两种模式下，非流式请求始终走已校验的聚合路径。
+- `realtime` 让三个协议都增量发送思考、正文、拒绝及工具参数。Responses 在输出项开始时分配稳定索引，Anthropic 使用稳定 block index。适配器在参数阶段或结束标记处确认工具身份，缺失时暂缓工具输出；元数据分片按顺序追加，不按字符串前缀猜测，输出项开始后禁止更换身份。`max_collect_bytes` 约束所保留的 UTF-8 输出，`0` 不限制。
+
+实时模式绝不重生成损坏或不完整的工具参数。发送成功终端前，会在终端边界校验工具 ID、名称、已声明名称、JSON object 参数及 `tool_choice`。实时模式下，存在工具调用时还必须带上游 `tool_calls` 结束标记；带工具却标为 `stop` 会拒绝，而 compatible 模式保留旧的兼容接受行为。下游尚未收到字节时，失败保留真实上游 HTTP 状态及既有、有界的响应前换号规则；已发送任何字节后，参数损坏、断连、流错误和预算超限均以协议错误终端结束，不重放或切换凭据。合法的 `length`、拒绝和审核结果保留各自协议区别（Responses 的截断/过滤为 `incomplete`，绝非 `completed`），且不会重生成。因此客户端必须接受「部分正文后跟错误」，不能假定已开流的 SSE 一定成功结束。审计只增加白名单 `stream_mode` 标记及上游实际提供的用量。
+
+运行时选回 `compatible` 即可恢复聚合流式及工具参数重生成，保留当前保存状态。源码降级前，移除新增 CLI/环境选项，停止网关并备份**当前**数据目录及同一代 SQLite/WAL/SHM。不要恢复升级前旧库，否则可能回滚新的领取、会话、撤销和账号状态。下例会离线写入当前数据库：仅删除 `settings.stream_mode`、递增 revision 并检查完整性，其它设置和表保持不变；禁止对运行中的数据库执行或混用 SQLite 文件代数。
+
+```sh
+python3 - /path/to/control.sqlite3 <<'PY'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+try:
+    con.execute("BEGIN IMMEDIATE")
+    row = con.execute("SELECT revision,payload FROM control WHERE id=1").fetchone()
+    if row is None:
+        raise SystemExit("missing control row")
+    revision, payload = row
+    data = json.loads(payload)
+    if set(data) != {"settings", "models", "credentials"} or not isinstance(data["settings"], dict):
+        raise SystemExit("unexpected control payload")
+    if "stream_mode" not in data["settings"]:
+        raise SystemExit("stream_mode is absent; no write needed")
+    del data["settings"]["stream_mode"]
+    con.execute("UPDATE control SET revision=?,payload=? WHERE id=1",
+                (revision + 1, json.dumps(data, ensure_ascii=False, allow_nan=False)))
+    con.commit()
+    if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+        raise SystemExit("integrity check failed")
+finally:
+    con.close()
+print("ok")
+PY
+```
+
+旧版严格设置校验器会拒绝这个未知键，仅把值改成 `compatible` 不能让旧源码兼容。该流程必须离线执行；没有当前备份和已停止服务时，不要对生产库执行。
 
 ### 连接复用与账号容量
 
@@ -186,7 +227,7 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 - 图片计入全部历史和工具结果，重复图片逐次计数，按消息与内容块数组顺序判断新旧。默认保留最新 16 张，只移除超额图片并保留文本和消息结构；图片清空的内容用文本占位。
 - `--image-policy error` 在本地返回 `413 / too_many_images`。处理后仍超过字节上限则返回 `413 / request_too_large`，不为满足预算继续截断文本。
 - 图片数量合规不保证单图大小或模型视觉能力满足上游要求。URL/base64 图片可转换，Responses 图片 `file_id` 不支持。
-- 省略 `stream` 时三个端点都按协议默认返回完整 JSON（非流式）；`stream` 必须是布尔值。Responses 流式以及带工具的 Chat / Messages 流式先聚合校验，再输出 SSE，并非所有路径都实时逐 token 转发。
+- 省略 `stream` 时三个端点都按协议默认返回完整 JSON（非流式）；`stream` 必须是布尔值。默认 `stream_mode=compatible` 时，Responses 流式以及带工具的 Chat / Messages 流式先聚合校验再输出 SSE；`realtime` 则让三个协议都增量发送，省略/非流式请求仍返回完整的已校验 JSON。
 - 推理错误按客户端协议成形：OpenAI 路由为顶层 `error` 对象，Messages 路由为 `{"type": "error", ...}`；保留状态码，开流后的错误只用 SSE 报告，不重放。
 - 上游有效 `Retry-After`（0–86400 秒或对应 HTTP 日期）规范化为秒并在开流前返回；429 仅冷却对应账号/模型。无效或过期值回落正文重置时间或默认 600 秒；本地全凭据冷却的 429 返回剩余等待秒数。
 - Chat 与 Responses 保留客户端显式 `prompt_cache_key`，不自动生成；缓存命中和节费取决于上游。
@@ -221,7 +262,7 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 | 流式在第一个字节之前失败 | 按真实状态码返回，与 `stream=false` 同口径。只带一个流内 `error` 事件的 200 会被客户端读成「模型答了个空」，会话静默结束，审计里还记成一次成功 |
 | 换凭证重放（`--failover-max`） | 默认关闭。开启后，失败发生在「一个字节都没发给下游」之前时换一个凭证重放，最多 N 次，审计记为 `success` 并留下 `failover_recovered` 尝试标记。可重放的失败：上游 HTTP 401/403/429/502/503/504 拒绝，与确定没开始收正文的传输失败（建连失败/超时）；内容审核拒绝、上游已回 200 后合成的 502、读超时与协议错误一律不重放；换不出其他凭证时如实回第一次的状态码。计费口径：401/403/429/503 与建连类失败发生在受理阶段，不会扣费；502/504 可能已被上游处理并计费，但结果到不了下游，不重放也退不回额度——只是把一次已付费请求变成断掉的会话。这类重放在日志里标注「上游可能已处理该请求」，便于对账 |
 | 写超时重放（`--retry-write-timeout`） | 默认关闭。写超时只能证明正文没发完，不能证明上游忽略了已收到的部分，因此默认既不参与连接重试也不参与换凭证重放；跨境长会话比握手更容易遇到写超时，确认上游不按半截正文计费后再开启。这类重放同样带「上游可能已处理该请求」日志标记 |
-| 工具参数损坏 | 聚合校验失败按 `--tool-call-max-retry`（默认 3）额外生成，可能消耗更多额度；被丢弃的生成带用量记入尝试明细；耗尽后返回错误 |
+| 工具参数损坏 | 兼容聚合校验按 `--tool-call-max-retry`（默认 3）额外生成，可能消耗更多额度；被丢弃的生成带用量记入尝试明细；耗尽后返回错误。实时模式绝不重生成，只在成功终端前报告协议错误 |
 | 上游空流或残流 | 没有有效输出、缺少结束标记或包含错误的流不伪装为成功 |
 | 内容审核拒绝 | 脱敏 + `--no-compact` 下，仅完整非流式纯拒绝且模板确实缩短时，最多同账号兜底一次；流式不做审核重试，也不因此熔断或切号 |
 | 响应慢 | 在 WebUI 查看耗时与失败尝试，再选择当前账号支持的更快模型 |
@@ -229,4 +270,4 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 
 ## 降级与回滚
 
-功能开关不藏隐状态：关闭守卫或模式即对新请求停止生效，回退源码即恢复旧行为。例外是持久化设置与自动化状态：`control.sqlite3` 保存 WebUI 设置、模型规则与奖励预留，旧代码会拒绝未知字段。源码降级前移除新增的启动参数，并恢复升级前的控制库备份（含 WAL/SHM 文件，不混用）。回滚无法撤销已完成的上游签到、领取或旅行派出。
+功能开关不藏隐状态：关闭守卫或模式即对新请求停止生效，回退源码即恢复旧行为。例外是持久化设置与自动化状态：`control.sqlite3` 保存 WebUI 设置、模型规则与奖励预留，旧代码会拒绝未知字段。源码降级前移除新增的启动参数，停止服务，备份**当前**数据目录，并使用上面的窄范围离线 `settings.stream_mode` 删除流程，递增 revision 并执行完整性检查。不要恢复升级前数据库，也不要混用 WAL/SHM 代数，否则可能回滚较新的领取、会话、撤销和账号状态。回滚无法撤销已完成的上游签到、领取或旅行派出。
