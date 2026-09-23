@@ -519,6 +519,32 @@ class RealtimeTransportTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         self.assertIn(b"data: [DONE]", wire)
 
+    async def test_realtime_filter_only_terminals_keep_protocol_status_and_usage(self):
+        for protocol in ("chat", "responses", "messages"):
+            for reason in ("content_filter", "content-filter", "refusal"):
+                for start_frame in (False, True):
+                    with self.subTest(protocol=protocol, reason=reason, start_frame=start_frame):
+                        rows = ([_line({"role": "assistant"}, "")] if start_frame else [])
+                        rows += [_line({}, reason, {"total_tokens": 2}), "data: [DONE]\n\n"]
+                        wire, attempts, failure = await self.collect(protocol, _FixedResponse(rows))
+                        self.assertEqual(attempts, 1)
+                        self.assertIsNone(failure)
+                        self.assertNotIn(b'"error"', wire)
+                        self.assertNotIn(b"response.completed", wire)
+                        if protocol == "responses":
+                            response = next(event["response"] for event in _events(wire.decode())
+                                            if event["type"] == "response.incomplete")
+                            self.assertEqual(response["output"], [])
+                            self.assertEqual(response["incomplete_details"]["reason"], "content_filter")
+                            self.assertEqual(response["usage"]["total_tokens"], 2)
+                        elif protocol == "chat":
+                            self.assertIn(b"data: [DONE]", wire)
+                            self.assertIn(reason.encode(), wire)
+                        else:
+                            self.assertIn(b"message_stop", wire)
+                            self.assertIn(b"end_turn", wire)
+
+
     async def test_realtime_budget_error_after_output_has_no_success_terminal(self):
         for protocol in ("chat", "responses", "messages"):
             with self.subTest(protocol=protocol):
@@ -597,6 +623,44 @@ class RealtimeTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(b"message_stop", wire)
                 self.assertNotIn(b"data: [DONE]", wire)
                 self.assertTrue(failure or b'"error"' in wire)
+
+
+    async def test_nonstream_failover_retains_entry_budget_across_hot_changes(self):
+        for protocol in ("chat", "responses", "messages"):
+            for mode in ("compatible", "realtime"):
+                for explicit in (False, True):
+                    with self.subTest(protocol=protocol, mode=mode, explicit_stream_false=explicit):
+                        attempts = []
+                        credentials = [object(), object()]
+                        def route(payload, body, rid, *, tried=()):
+                            # Routing runs after entry policy capture, before the first collection.
+                            converter.CONFIG["max_collect_bytes"] = 64
+                            return body, credentials[len(tried)], {}, "https://synthetic.invalid"
+                        @asynccontextmanager
+                        async def backend(url, headers, body, **kwargs):
+                            json.dumps(body)  # Policy snapshots must not leak onto the wire.
+                            attempts.append(body)
+                            if len(attempts) == 1:
+                                converter.CONFIG["max_collect_bytes"] = 128
+                                yield _FixedResponse(status=503, body=b'{"error":{"message":"busy"}}')
+                            else:
+                                yield _FixedResponse([_line({"content": "oversize"}), _line({}, "stop")])
+                        body = self.payload(protocol, tools=False)
+                        if explicit:
+                            body["stream"] = False
+                        else:
+                            body.pop("stream")
+                        path = {"chat": "/v1/chat/completions", "responses": "/v1/responses",
+                                "messages": "/v1/messages"}[protocol]
+                        sent = await self.asgi_post(path, body, backend, route=route, config={
+                            "stream_mode": mode, "max_collect_bytes": 4, "failover_max": 1})
+                        self.assertEqual(len(attempts), 2)
+                        self.assertEqual(sent[0]["status"], 502)
+                        self.assertIn(b"response_too_large", b"".join(m.get("body", b"") for m in sent))
+                        # A later request sees the new budget, while the prior request did not.
+                        sent = await self.asgi_post(path, body, backend, route=route, config={
+                            "stream_mode": mode, "max_collect_bytes": 128, "failover_max": 1})
+                        self.assertEqual(sent[0]["status"], 200)
 
 
     async def test_protocol_mode_and_tool_matrix_has_no_aggregate_in_realtime(self):
@@ -1048,6 +1112,75 @@ class RealtimeAdapterTests(unittest.TestCase):
 
 
 class RealtimeAuditTests(unittest.TestCase):
+    def test_all_generation_audits_record_the_entry_mode(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        store = AuditStore(root / "audit.sqlite3")
+        self.addCleanup(store.close)
+        application = FastAPI()
+        application.router.routes = list(converter.app.router.routes)
+        application.add_middleware(AuditMiddleware, store)
+        @asynccontextmanager
+        async def backend(*args, **kwargs):
+            yield _FixedResponse([_line({"content": "ok"}), _line({}, "stop", {"total_tokens": 2})])
+        config = {"api_key": "", "model_guard": False, "max_images": 16, "image_policy": "truncate",
+                  "max_request_bytes": 32 * 1024 * 1024, "max_collect_bytes": 128, "log_path": None}
+        with patch.dict(converter.CONFIG, config), patch.object(converter, "_backend_stream", backend), \
+             patch.object(converter, "_log"), patch.object(converter, "_note_cred_model_ok"):
+            client = self.enterContext(TestClient(application))
+            for protocol in ("chat", "responses", "messages"):
+                for mode in ("compatible", "realtime"):
+                    for stream in (None, False, True):
+                        with self.subTest(protocol=protocol, mode=mode, stream=stream):
+                            converter.CONFIG["stream_mode"] = mode
+                            def route(payload, body, rid):
+                                converter.CONFIG["stream_mode"] = "realtime" if mode == "compatible" else "compatible"
+                                return body, None, {}, "https://synthetic.invalid"
+                            body = {"model": "auto", "max_tokens": 32}
+                            body.update({"input": "hi"} if protocol == "responses" else {
+                                "messages": [{"role": "user", "content": "hi"}]})
+                            if stream is not None:
+                                body["stream"] = stream
+                            path = {"chat": "/v1/chat/completions", "responses": "/v1/responses",
+                                    "messages": "/v1/messages"}[protocol]
+                            with patch.object(converter, "_route_chat", side_effect=route):
+                                response = client.post(path, json=body)
+                            self.assertEqual(response.status_code, 200, response.text)
+                            record = store.list_records()["items"][0]
+                            self.assertEqual(record["stream_mode"], mode)
+                            self.assertEqual(record["outcome"], "success")
+
+
+    def test_empty_realtime_filter_audits_as_rejected_without_replay(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        store = AuditStore(root / "audit.sqlite3")
+        self.addCleanup(store.close)
+        application = FastAPI()
+        application.router.routes = list(converter.app.router.routes)
+        application.add_middleware(AuditMiddleware, store)
+        attempts = []
+        @asynccontextmanager
+        async def backend(*args, **kwargs):
+            attempts.append(1)
+            yield _FixedResponse([_line({}, "content_filter", {"total_tokens": 2})])
+        config = {"api_key": "", "model_guard": False, "max_images": 16, "image_policy": "truncate",
+                  "max_request_bytes": 32 * 1024 * 1024, "max_collect_bytes": 128,
+                  "log_path": None, "stream_mode": "realtime", "failover_max": 2}
+        with patch.dict(converter.CONFIG, config), patch.object(converter, "_backend_stream", backend), \
+             patch.object(converter, "_route_chat", side_effect=lambda payload, body, rid: (body, None, {}, "https://synthetic.invalid")), \
+             patch.object(converter, "_log"), patch.object(converter, "_note_cred_model_ok"):
+            client = self.enterContext(TestClient(application))
+            response = client.post("/v1/responses", json={"model": "auto", "input": "hi", "stream": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("response.incomplete", response.text)
+        self.assertNotIn("response.completed", response.text)
+        self.assertEqual(len(attempts), 1)
+        record = store.list_records()["items"][0]
+        self.assertEqual((record["outcome"], record["stream_mode"], record["total_tokens"]),
+                         ("error", "realtime", 2))
+        self.assertEqual(record["error_code"], "response_incomplete")
+        self.assertTrue(any(attempt["stage"] == "content_filter" for attempt in record["attempts"]))
+
+
     def test_failed_realtime_terminal_is_error_with_mode_and_actual_usage(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         store = AuditStore(root / "audit.sqlite3")

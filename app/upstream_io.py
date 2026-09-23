@@ -331,12 +331,13 @@ class ChatSSEAccumulator:
                  "function": {"name": value["name"], "arguments": value["arguments"]}}
                 for _, value in sorted(self.tools.items())]
 
-    def result(self):
+    def result(self, *, allow_empty_filter=False):
         if not self.saw_choice or not (self.done or self.finish_reason is not None):
             raise httpx.RemoteProtocolError("Upstream SSE ended without a completion marker")
         seal_tool_identities(self.tools, self.declared_names)
-        if not self.saw_output:
-            if self.finish_reason in ("content_filter", "content-filter", "refusal"):
+        filter_terminal = self.finish_reason in ("content_filter", "content-filter", "refusal")
+        if not self.saw_output and not (allow_empty_filter and filter_terminal):
+            if filter_terminal:
                 raw = {"error": {"type": "upstream_error", "code": self.finish_reason,
                                  "message": "Upstream rejected the response without output"}}
                 raise UpstreamResponseError(502, json.dumps(raw).encode("utf-8"))

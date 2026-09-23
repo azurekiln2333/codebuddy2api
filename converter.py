@@ -2795,9 +2795,8 @@ async def chat_completions(request: Request,
     client_wants_stream = _client_wants_stream(payload)
     body = {k: payload[k] for k in PASSTHROUGH_BODY_KEYS if k in payload}
     body = await run_in_threadpool(_prepare_chat_body, body, session_payload=payload)
-    stream_policy = (_snapshot_stream_policy("chat", body) if client_wants_stream else None)
-    if stream_policy is not None:
-        observe_stream_mode(stream_policy.mode)
+    stream_policy = _snapshot_stream_policy("chat", body)
+    observe_stream_mode(stream_policy.mode)
 
     # Record request metadata.
     model_name = payload.get("model", "auto")
@@ -2814,7 +2813,7 @@ async def chat_completions(request: Request,
     _log_json(f"[{rid}] REQUEST BODY (发往后端，预览)", body)
     t0 = time.time()
 
-    if stream_policy is not None:
+    if client_wants_stream:
         def attempt(routed, cred, headers, url):
             return _stream_upstream(url, headers, _body_with_stream_policy(routed, stream_policy),
                                     model_name, t0, rid, cred=cred)
@@ -2824,7 +2823,7 @@ async def chat_completions(request: Request,
     # Aggregate upstream SSE for non-streaming clients.
     async def fetch(routed, cred, headers, url):
         return await _fetch_checked_chat(url, headers, routed, model_name, rid, cred,
-                                         filter_retry=True)
+                                         filter_retry=True, max_collect_bytes=stream_policy.max_collect_bytes)
     # Watch for disconnects across the entire failover sequence.
     try:
         collected = await await_or_hangup(
@@ -3146,12 +3145,7 @@ def _hungup_response(rid, model_name, t0):
 
 async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *, filter_retry=False,
                              max_collect_bytes=None):
-    """Collect and validate replies with bounded tool repair and one eligible filter fallback.
-
-    ``max_collect_bytes`` is an optional frozen request-policy value. Streaming
-    callers pass it explicitly so hot configuration changes cannot enlarge a
-    collection or one of its repair attempts after the request has started.
-    """
+    """Collect with bounded repair and one eligible filter retry using a frozen request budget."""
     tool_attempt = 0
     filter_retried = False
     collection_limit = (CONFIG.get("max_collect_bytes", 0) if max_collect_bytes is None
@@ -3235,7 +3229,7 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
         state["tracker"] = tracker
 
     def completed():
-        merged = tracker.result()
+        merged = tracker.result(allow_empty_filter=policy.realtime)
         if policy.realtime:
             _validate_realtime_tools(
                 merged.get("tool_calls"), body, merged.get("finish_reason"),
@@ -3597,9 +3591,8 @@ async def create_response(request: Request,
     chat_body = await run_in_threadpool(_prepare_chat_body, chat_body)
 
     client_wants_stream = _client_wants_stream(payload)
-    stream_policy = (_snapshot_stream_policy("responses", chat_body) if client_wants_stream else None)
-    if stream_policy is not None:
-        observe_stream_mode(stream_policy.mode)
+    stream_policy = _snapshot_stream_policy("responses", chat_body)
+    observe_stream_mode(stream_policy.mode)
     model_name = payload.get("model", "auto")
     rid = _request_id()
     _log(f"[{rid}] ▶ RESPONSES {model_name} | stream={client_wants_stream} | input_items={len(payload.get('input', []))}")
@@ -3620,7 +3613,7 @@ async def create_response(request: Request,
     _log_json(f"[{rid}] RESPONSES → CHAT BODY (预览)", chat_body)
     t0 = time.time()
 
-    if stream_policy is not None:
+    if client_wants_stream:
         def attempt(routed, cred, headers, url):
             return _stream_responses(url, headers, _body_with_stream_policy(routed, stream_policy),
                                      model_name, t0, rid, cred=cred)
@@ -3628,16 +3621,17 @@ async def create_response(request: Request,
                               chat_body, cred, headers, url)
 
     return await _nonstream_adapted(url, headers, chat_body, model_name, t0, rid, cred,
-                                    payload=payload, canonical=prepared, request=request)
+                                    payload=payload, canonical=prepared, request=request, policy=stream_policy)
 
 
 async def _nonstream_adapted(url, headers, body, model_name, t0, rid, cred, *, anthropic=False,
-                             payload=None, canonical=None, request=None):
+                             payload=None, canonical=None, request=None, policy=None):
+    policy = policy or _snapshot_stream_policy("messages" if anthropic else "responses", body)
     converter = (AnthropicStreamConverter(model=model_name) if anthropic else ResponsesStreamConverter(model=model_name, parallel_tool_calls=body.get("parallel_tool_calls", True)))
 
     async def fetch(routed, cred, headers, url):
         return await _fetch_checked_chat(url, headers, routed, model_name, rid, cred,
-                                         filter_retry=True)
+                                         filter_retry=True, max_collect_bytes=policy.max_collect_bytes)
     try:
         collected = await await_or_hangup(
             _routed_fetch(payload, body if canonical is None else canonical,
@@ -3764,9 +3758,8 @@ async def create_message(request: Request,
 
     chat_body = await run_in_threadpool(_prepare_chat_body, chat_body, session_payload=payload)
     client_wants_stream = _client_wants_stream(payload)
-    stream_policy = (_snapshot_stream_policy("messages", chat_body) if client_wants_stream else None)
-    if stream_policy is not None:
-        observe_stream_mode(stream_policy.mode)
+    stream_policy = _snapshot_stream_policy("messages", chat_body)
+    observe_stream_mode(stream_policy.mode)
     model_name = payload.get("model", "auto")
     chat_messages = chat_body.get("messages", [])
     rid = _request_id()
@@ -3780,7 +3773,7 @@ async def create_message(request: Request,
     if not client_wants_stream:
         return await _nonstream_adapted(url, headers, chat_body, model_name, t0, rid, cred,
                                         anthropic=True, payload=payload, canonical=prepared,
-                                        request=request)
+                                        request=request, policy=stream_policy)
 
     def attempt(routed, cred, headers, url):
         return _stream_anthropic(url, headers, _body_with_stream_policy(routed, stream_policy),

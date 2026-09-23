@@ -57,12 +57,14 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 
 ### 流式模式
 
-`stream_mode` 默认 `compatible`，可通过 `--stream-mode compatible|realtime`、`CODEBUDDY2API_STREAM_MODE` 或 WebUI 热更新枚举「流式模式」配置。显式 CLI/环境来源会锁定 WebUI 项。每个请求入口都会冻结此选择及 `max_collect_bytes`，因此热更新只影响后续请求，不改变在途流或其换号路径；客户端不能按请求覆盖。
+`stream_mode` 默认 `compatible`，可通过 `--stream-mode compatible|realtime`、`CODEBUDDY2API_STREAM_MODE` 或 WebUI 枚举配置；显式 CLI/环境来源会锁定该项。所有生成请求（含非流式）均在选路前冻结模式及 `max_collect_bytes`，并记录所选模式。热更新只影响后续请求，不改变在途请求及换号；非流式仍返回聚合 JSON，客户端不能按请求覆盖模式。
 
 - `compatible` 保持现有行为：Responses 流式先聚合；Chat/Messages 带工具时先聚合，无工具时沿用上游增量。聚合结果先校验，再按片段重放。两种模式下，非流式请求始终走已校验的聚合路径。
 - `realtime` 让三个协议都增量发送思考、正文、拒绝及工具参数。Responses 在输出项开始时分配稳定索引，Anthropic 使用稳定 block index。适配器在参数阶段或结束标记处确认工具身份，缺失时暂缓工具输出；元数据分片按顺序追加，不按字符串前缀猜测，输出项开始后禁止更换身份。`max_collect_bytes` 约束所保留的 UTF-8 输出，`0` 不限制。
 
 实时模式绝不重生成损坏或不完整的工具参数。发送成功终端前，会在终端边界校验工具 ID、名称、已声明名称、JSON object 参数及 `tool_choice`。实时模式下，存在工具调用时还必须带上游 `tool_calls` 结束标记；带工具却标为 `stop` 会拒绝，而 compatible 模式保留旧的兼容接受行为。下游尚未收到字节时，失败保留真实上游 HTTP 状态及既有、有界的响应前换号规则；已发送任何字节后，参数损坏、断连、流错误和预算超限均以协议错误终端结束，不重放或切换凭据。合法的 `length`、拒绝和审核结果保留各自协议区别（Responses 的截断/过滤为 `incomplete`，绝非 `completed`），且不会重生成。因此客户端必须接受「部分正文后跟错误」，不能假定已开流的 SSE 一定成功结束。审计只增加白名单 `stream_mode` 标记及上游实际提供的用量。
+
+明确的纯审核拒绝即使没有正文也保留原生终态：实时 Responses 返回 `response.incomplete`，原因是 `content_filter`，并保留已有用量。普通空响应、缺少终止标记及错误帧仍不得伪装成功。
 
 运行时选回 `compatible` 即可恢复聚合流式及工具参数重生成，保留当前保存状态。源码降级前，移除新增 CLI/环境选项，停止网关并备份**当前**数据目录及同一代 SQLite/WAL/SHM。不要恢复升级前旧库，否则可能回滚新的领取、会话、撤销和账号状态。下例会离线写入当前数据库：仅删除 `settings.stream_mode`、递增 revision 并检查完整性，其它设置和表保持不变；禁止对运行中的数据库执行或混用 SQLite 文件代数。
 
