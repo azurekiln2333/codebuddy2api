@@ -18,6 +18,7 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager, nullcontext
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -54,13 +55,14 @@ from app.credential_cooldowns import CredentialCooldowns
 from app.model_blocks import ModelBlocks
 from app.usage_snapshots import UsageSnapshots
 from app.client_hangup import ClientHungUp, await_or_hangup
-from app.observability import (AuditMiddleware, observe_recovery, observe_route,
+from app.observability import (AuditMiddleware, observe_recovery, observe_route, observe_stream_mode,
                                observe_usage, observe_attempt, observe_failure,
                                observe_failure_seq)
 from app.credential_io import (CredentialFileError, read_import_file, atomic_write_credential,
                                credential_file_lock)
-from app.upstream_io import (ChatSSEAccumulator, UpstreamHTTPError, UpstreamResponseError,
-                             open_backend_stream, parse_retry_after, read_bounded_error)
+from app.upstream_io import (ChatSSEAccumulator, StreamOutputBudget, UpstreamHTTPError,
+                             UpstreamResponseError, open_backend_stream, parse_retry_after,
+                             read_bounded_error)
 from app.inference_resources import (AccountCapacity, InferenceResourcesMiddleware, inference_lifespan,
                                      request_resources, release_credential)
 from app.request_context import SessionIdentifierError, current_context
@@ -92,6 +94,38 @@ BACKEND = "https://copilot.tencent.com"
 DEFAULT_DOMAIN = "www.codebuddy.cn"
 CBC_VERSION = CLI_VERSION
 USER_AGENT = CLI_USER_AGENT
+
+_STREAM_MODES = ("compatible", "realtime")
+_REQUEST_POLICY_KEY = object()  # Process-local object key; never serializable or client injectable.
+
+
+@dataclass(frozen=True)
+class _StreamRequestPolicy:
+    mode: str
+    aggregate: bool
+    max_collect_bytes: int
+
+    @property
+    def realtime(self):
+        return self.mode == "realtime"
+
+
+def _snapshot_stream_policy(protocol: str, body: dict) -> _StreamRequestPolicy:
+    """Freeze hot streaming choices and memory policy for one request and all failovers."""
+    mode = CONFIG.get("stream_mode", "compatible")
+    if mode not in _STREAM_MODES:
+        raise ValueError("invalid stream mode")
+    compatible_aggregate = protocol == "responses" or bool(body.get("tools"))
+    return _StreamRequestPolicy(mode, mode == "compatible" and compatible_aggregate,
+                                max(0, int(CONFIG.get("max_collect_bytes", 0) or 0)))
+
+
+def _body_with_stream_policy(body: dict, policy: _StreamRequestPolicy) -> dict:
+    """Attach a process-local snapshot without exposing an upstream payload override."""
+    routed = dict(body)
+    routed[_REQUEST_POLICY_KEY] = policy
+    return routed
+
 
 # ---------------------------------------------------------------------------
 # Platform-specific credential directories
@@ -1783,7 +1817,7 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "max_collect_bytes": 8 * 1024 * 1024, "max_concurrent": 64,
                 "upstream_keepalive": False, "max_inflight_per_account": 0,
                 "request_context_mode": "legacy",
-                "model_capability_guard": True,
+                "stream_mode": "compatible", "model_capability_guard": True,
                 "failover_max": 0,     # Credential failovers allowed before the first response byte
                 "retry_write_timeout": False,  # Opt-in replay after incomplete writes
                 "usage_daily": None,     # Usage aggregated by date and model
@@ -2761,6 +2795,8 @@ async def chat_completions(request: Request,
     client_wants_stream = _client_wants_stream(payload)
     body = {k: payload[k] for k in PASSTHROUGH_BODY_KEYS if k in payload}
     body = await run_in_threadpool(_prepare_chat_body, body, session_payload=payload)
+    stream_policy = _snapshot_stream_policy("chat", body)
+    observe_stream_mode(stream_policy.mode)
 
     # Record request metadata.
     model_name = payload.get("model", "auto")
@@ -2779,14 +2815,15 @@ async def chat_completions(request: Request,
 
     if client_wants_stream:
         def attempt(routed, cred, headers, url):
-            return _stream_upstream(url, headers, routed, model_name, t0, rid, cred=cred)
+            return _stream_upstream(url, headers, _body_with_stream_policy(routed, stream_policy),
+                                    model_name, t0, rid, cred=cred)
         return _routed_stream(payload, prepared, model_name, rid, t0, attempt,
                               body, cred, headers, url)
 
     # Aggregate upstream SSE for non-streaming clients.
     async def fetch(routed, cred, headers, url):
         return await _fetch_checked_chat(url, headers, routed, model_name, rid, cred,
-                                         filter_retry=True)
+                                         filter_retry=True, max_collect_bytes=stream_policy.max_collect_bytes)
     # Watch for disconnects across the entire failover sequence.
     try:
         collected = await await_or_hangup(
@@ -2869,39 +2906,94 @@ _TOOL_CALL_MAX_RETRY = 3
 
 
 def _tool_choice_satisfied(tool_calls, body):
+    calls = tool_calls or []
     choice = body.get("tool_choice")
     if choice == "none":
-        return not tool_calls
-    if choice != "required":
-        return True
-    names = {tool.get("function", {}).get("name") for tool in body.get("tools", [])
-             if isinstance(tool, dict) and isinstance(tool.get("function"), dict)}
-    return bool(tool_calls) and all(call.get("function", {}).get("name") in names for call in tool_calls)
+        return not calls
+    if choice == "required":
+        names = _declared_tool_names(body)
+        return bool(calls) and all(call.get("function", {}).get("name") in names for call in calls)
+    if isinstance(choice, dict):
+        name = (choice.get("function") or {}).get("name") if isinstance(choice.get("function"), dict) else None
+        return bool(calls) and all(call.get("function", {}).get("name") == name for call in calls)
+    return True
 
 
-def _tool_calls_healthy(tool_calls, body: dict | None = None) -> bool:
-    """Validate tool names and require arguments to encode a JSON object."""
-    if not tool_calls:
-        return True
-    names = {tool.get("function", {}).get("name") for tool in (body or {}).get("tools", [])
-             if isinstance(tool, dict) and isinstance(tool.get("function"), dict)} if body is not None else None
-    for tc in tool_calls:
-        if not isinstance(tc.get("id"), str) or not tc["id"].strip():
+def _declared_tool_names(body: dict) -> frozenset[str]:
+    """Extract declared function names for conservative realtime identity boundaries."""
+    names = set()
+    for tool in body.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            names.add(function["name"])
+        elif isinstance(tool.get("name"), str):
+            names.add(tool["name"])
+    return frozenset(name for name in names if name)
+
+
+def _tool_calls_healthy(tool_calls, body: dict | None = None, *, require_declarations=False) -> bool:
+    """Validate unique calls, declared names and JSON-object arguments."""
+    calls = tool_calls or []
+    names = set(_declared_tool_names(body)) if body is not None else None
+    seen_ids = set()
+    for tc in calls:
+        if not isinstance(tc, dict):
             return False
+        call_id = tc.get("id")
+        if (not isinstance(call_id, str) or not call_id.strip()
+                or (require_declarations and call_id in seen_ids)
+                or (require_declarations and tc.get("type") != "function")):
+            return False
+        if not require_declarations:
+            seen_ids.add(call_id)
+        seen_ids.add(call_id)
         fn = tc.get("function") or {}
-        name = fn.get("name") or ""
-        if not name.strip() or not (fn.get("arguments") or "").strip():
+        if not isinstance(fn, dict):
             return False
-        # Valid JSON must still be an object; check names only when tools were declared.
-        if names and name not in names:
+        name = fn.get("name") or ""
+        arguments = fn.get("arguments") or ""
+        if not isinstance(name, str) or not name.strip() or not isinstance(arguments, str) or not arguments.strip():
+            return False
+        if names is not None and ((require_declarations or names) and name not in names):
             return False
         try:
-            arguments = json.loads(fn.get("arguments") or "")
-        except Exception:
+            decoded = json.loads(arguments)
+        except (TypeError, ValueError, UnicodeError, RecursionError):
             return False
-        if not isinstance(arguments, dict):
+        if not isinstance(decoded, dict):
             return False
+    if (require_declarations and body is not None
+            and body.get("parallel_tool_calls") is False and len(calls) > 1):
+        return False
     return True
+
+
+def _validate_realtime_tools(tool_calls, body: dict, finish_reason=None, *, filtered=False):
+    """Validate terminal state without regenerating or replaying the request.
+
+    Explicit refusal/filter and length results are incomplete upstream outcomes,
+    not malformed tool calls. Any tool bytes that are present still have to be
+    structurally healthy, but a required/named choice need not be satisfied when
+    the upstream legitimately stopped before producing a call.
+    """
+    if not _tool_calls_healthy(tool_calls, body, require_declarations=True):
+        healthy = False
+    elif finish_reason is None:
+        # Realtime success terminals require an explicit upstream completion
+        # marker; [DONE] alone remains compatible only on the legacy path.
+        healthy = False
+    elif filtered or finish_reason in ("length", "content_filter", "content-filter", "refusal"):
+        healthy = True
+    else:
+        healthy = (_tool_choice_satisfied(tool_calls, body)
+                   and (finish_reason == "tool_calls" if tool_calls else finish_reason != "tool_calls"))
+    if healthy:
+        return
+    raw = {"error": {"message": "Invalid upstream tool_calls", "type": "upstream_error",
+                     "code": "invalid_tool_calls"}}
+    raise UpstreamResponseError(502, json.dumps(raw).encode("utf-8"))
 
 
 def _merge_chat_sse_text(text: str) -> dict:
@@ -3051,12 +3143,15 @@ def _hungup_response(rid, model_name, t0):
     return Response(status_code=204)
 
 
-async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *, filter_retry=False):
-    """Collect and validate replies with bounded tool repair and one eligible filter fallback."""
+async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *, filter_retry=False,
+                             max_collect_bytes=None):
+    """Collect with bounded repair and one eligible filter retry using a frozen request budget."""
     tool_attempt = 0
     filter_retried = False
+    collection_limit = (CONFIG.get("max_collect_bytes", 0) if max_collect_bytes is None
+                        else max_collect_bytes)
     while True:
-        accumulator = ChatSSEAccumulator(max_collect_bytes=CONFIG.get("max_collect_bytes", 0))
+        accumulator = ChatSSEAccumulator(max_collect_bytes=collection_limit)
         rejection = None
         async with _backend_stream(url, headers, body, rid=rid, model_name=model_name) as response:
             if response.status_code != 200:
@@ -3113,37 +3208,62 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
                         total_tokens=discarded.get("total_tokens"))
         _log(f"[{rid}] tool_calls 损坏，重试 {tool_attempt}/{budget} | {model_name}")
 
-async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *, aggregate=False):
+async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
+                          policy=None, tracker=None, state=None):
     """Yield validated Chat SSE with bounded filter detection and no streaming filter retries."""
-    if aggregate:
-        result = await _fetch_checked_chat(url, headers, body, model_name, rid, cred)
+    policy = policy or _snapshot_stream_policy("chat", body)
+    if policy.aggregate:
+        result = await _fetch_checked_chat(
+            url, headers, body, model_name, rid, cred,
+            max_collect_bytes=policy.max_collect_bytes)
         for line in _chat_result_to_sse_lines(_completion_to_merged(result)):
             yield line
             yield ""
         _log_finish(model_name, t0, result, rid)
         return
-    tracker = ChatSSEAccumulator(collect=False)
+    if tracker is None:
+        tracker = ChatSSEAccumulator(
+            collect=False, retain_tools=policy.realtime,
+            budget=StreamOutputBudget(policy.max_collect_bytes))
+    if state is not None:
+        state["tracker"] = tracker
+
+    def completed():
+        merged = tracker.result(allow_empty_filter=policy.realtime)
+        if policy.realtime:
+            _validate_realtime_tools(
+                merged.get("tool_calls"), body, merged.get("finish_reason"),
+                filtered=tracker.filter_detector.detected)
+        if state is not None:
+            state["merged"] = merged
+        return merged
+
     preview = bytearray()
-    budget = CONFIG["log_body_limit"] if CONFIG.get("log_path") else 0
-    async with _backend_stream(url, headers, body, rid=rid, model_name=model_name) as response:
-        if response.status_code != 200:
-            _check_upstream_status(response.status_code, await read_bounded_error(response), cred, body.get("model"),
-                                   headers=response.headers)
-        else:
-            _note_cred_model_ok(cred, body.get("model"))
-        async for line in response.aiter_lines():
-            tracker.feed_line(line)
-            if tracker.done or tracker.finish_reason:
-                tracker.result()  # Validate completion before emitting a success marker.
-            remaining = budget - len(preview)
-            if remaining > 0:
-                preview.extend((line[:remaining] + "\n").encode("utf-8")[:remaining])
-            yield line
-            if tracker.done:
-                yield ""
-                break
-    merged = tracker.result()
-    observe_usage(merged.get("usage") or {})
+    # Realtime output is never copied into the retired raw-text preview log.
+    budget = 0 if policy.realtime else (
+        CONFIG["log_body_limit"] if CONFIG.get("log_path") else 0)
+    try:
+        async with _backend_stream(url, headers, body, rid=rid, model_name=model_name) as response:
+            if response.status_code != 200:
+                _check_upstream_status(response.status_code, await read_bounded_error(response), cred, body.get("model"),
+                                       headers=response.headers)
+            else:
+                _note_cred_model_ok(cred, body.get("model"))
+            async for line in response.aiter_lines():
+                tracker.feed_line(line)
+                if tracker.done or tracker.finish_reason:
+                    completed()  # Never expose a success marker before terminal validation.
+                remaining = budget - len(preview)
+                if remaining > 0:
+                    preview.extend((line[:remaining] + "\n").encode("utf-8")[:remaining])
+                yield line
+                if tracker.done:
+                    yield ""
+                    break
+        merged = completed()
+    finally:
+        if tracker.usage:
+            observe_usage(tracker.usage)
     if tracker.filter_detector.detected:
         _note_content_filter(rid, model_name, final=True)
         return
@@ -3154,16 +3274,23 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
 
 async def _stream_upstream(url: str, headers: dict, body: dict,
                            model_name: str = "?", t0: float = 0.0, rid: str = "", cred=None):
+    policy = body.pop(_REQUEST_POLICY_KEY, None) or _snapshot_stream_policy("chat", body)
     sent = False
+    upstream = _chat_sse_lines(url, headers, body, model_name, t0, rid, cred, policy=policy)
     try:
-        async for line in _chat_sse_lines(url, headers, body, model_name, t0, rid, cred, aggregate=bool(body.get("tools"))):
-            sent = True
-            yield (_public_sse_line(line, model_name) + "\n").encode("utf-8")
-    except (httpx.HTTPError, UpstreamResponseError) as error:
-        if not sent:
-            raise      # Preserve the HTTP error while no response bytes have been sent.
-        status, raw = _upstream_failure(error, model_name, t0, rid)
-        yield _err_event(raw, status)
+        try:
+            async for line in upstream:
+                sent = True
+                yield (_public_sse_line(line, model_name) + "\n").encode("utf-8")
+        except (httpx.HTTPError, UpstreamResponseError) as error:
+            if not sent:
+                raise      # Preserve the HTTP error while no response bytes have been sent.
+            status, raw = _upstream_failure(error, model_name, t0, rid)
+            yield _err_event(raw, status)
+    finally:
+        # The inner generator may be suspended at a yielded line when its
+        # consumer reports an adapter error or a downstream disconnect.
+        await _close_stream(upstream)
 
 
 
@@ -3464,6 +3591,8 @@ async def create_response(request: Request,
     chat_body = await run_in_threadpool(_prepare_chat_body, chat_body)
 
     client_wants_stream = _client_wants_stream(payload)
+    stream_policy = _snapshot_stream_policy("responses", chat_body)
+    observe_stream_mode(stream_policy.mode)
     model_name = payload.get("model", "auto")
     rid = _request_id()
     _log(f"[{rid}] ▶ RESPONSES {model_name} | stream={client_wants_stream} | input_items={len(payload.get('input', []))}")
@@ -3486,21 +3615,23 @@ async def create_response(request: Request,
 
     if client_wants_stream:
         def attempt(routed, cred, headers, url):
-            return _stream_responses(url, headers, routed, model_name, t0, rid, cred=cred)
+            return _stream_responses(url, headers, _body_with_stream_policy(routed, stream_policy),
+                                     model_name, t0, rid, cred=cred)
         return _routed_stream(payload, prepared, model_name, rid, t0, attempt,
                               chat_body, cred, headers, url)
 
     return await _nonstream_adapted(url, headers, chat_body, model_name, t0, rid, cred,
-                                    payload=payload, canonical=prepared, request=request)
+                                    payload=payload, canonical=prepared, request=request, policy=stream_policy)
 
 
 async def _nonstream_adapted(url, headers, body, model_name, t0, rid, cred, *, anthropic=False,
-                             payload=None, canonical=None, request=None):
+                             payload=None, canonical=None, request=None, policy=None):
+    policy = policy or _snapshot_stream_policy("messages" if anthropic else "responses", body)
     converter = (AnthropicStreamConverter(model=model_name) if anthropic else ResponsesStreamConverter(model=model_name, parallel_tool_calls=body.get("parallel_tool_calls", True)))
 
     async def fetch(routed, cred, headers, url):
         return await _fetch_checked_chat(url, headers, routed, model_name, rid, cred,
-                                         filter_retry=True)
+                                         filter_retry=True, max_collect_bytes=policy.max_collect_bytes)
     try:
         collected = await await_or_hangup(
             _routed_fetch(payload, body if canonical is None else canonical,
@@ -3521,35 +3652,81 @@ async def _nonstream_adapted(url, headers, body, model_name, t0, rid, cred, *, a
 
 async def _stream_adapted(url, headers, body, model_name, t0, rid, cred=None, *, anthropic=False):
     """Map protocol events while sharing connection, aggregation and failure handling."""
-    converter = (AnthropicStreamConverter(model=model_name) if anthropic else ResponsesStreamConverter(model=model_name, parallel_tool_calls=body.get("parallel_tool_calls", True)))
+    protocol = "messages" if anthropic else "responses"
+    policy = body.pop(_REQUEST_POLICY_KEY, None) or _snapshot_stream_policy(protocol, body)
+    state = {}
+    tracker = None
+    declared_names = _declared_tool_names(body)
+    if policy.realtime:
+        budget = StreamOutputBudget(policy.max_collect_bytes)
+        tracker = ChatSSEAccumulator(collect=False, retain_tools=True, budget=budget,
+                                     declared_names=declared_names)
+        converter = (AnthropicStreamConverter(model=model_name, realtime=True, budget=budget,
+                                              tool_states=tracker.tools, declared_names=declared_names)
+                     if anthropic else
+                     ResponsesStreamConverter(model=model_name,
+                                              parallel_tool_calls=body.get("parallel_tool_calls", True),
+                                              realtime=True, budget=budget, tool_states=tracker.tools,
+                                              declared_names=declared_names))
+    else:
+        converter = (AnthropicStreamConverter(model=model_name) if anthropic else
+                     ResponsesStreamConverter(model=model_name,
+                                              parallel_tool_calls=body.get("parallel_tool_calls", True)))
     sent = False
+    upstream = _chat_sse_lines(
+        url, headers, body, model_name, t0, rid, cred,
+        policy=policy, tracker=tracker, state=state)
     try:
-        async for line in _chat_sse_lines(
-                url, headers, body, model_name, t0, rid, cred,
-                aggregate=not anthropic or bool(body.get("tools"))):
-            events = converter.feed_line(_public_sse_line(line, model_name))
+        try:
+            async for line in upstream:
+                events = converter.feed_line(_public_sse_line(line, model_name))
+                if events:
+                    sent = True
+                    yield events.encode("utf-8")
+            if policy.realtime:
+                converter.set_validated_tools((state.get("merged") or {}).get("tool_calls"))
+                if tracker.filter_detector.detected:
+                    converter.mark_content_filter()
+            events = converter.finish()
             if events:
                 sent = True
                 yield events.encode("utf-8")
-        events = converter.finish()
-        if events:
-            sent = True
-            yield events.encode("utf-8")
-    except (httpx.HTTPError, UpstreamResponseError) as error:
-        if not sent:
-            raise      # Preserve the HTTP error before any response bytes are sent.
-        status, raw = _upstream_failure(error, model_name, t0, rid)
-        event = {"type": "error", "error": {
-            "message": sanitize_log_text(raw.decode("utf-8", "replace"), 512),
-            "type": "api_error" if anthropic else "upstream_error", "code": status}}
-        prefix = "event: error\n" if anthropic else ""
-        yield (prefix + f"data: {json.dumps(event, ensure_ascii=False)}\n\n").encode("utf-8")
+        except (httpx.HTTPError, UpstreamResponseError) as error:
+            if not sent:
+                raise      # Preserve the HTTP error before any response bytes have been sent.
+            status, raw = _upstream_failure(error, model_name, t0, rid)
+            event = {"type": "error", "error": {
+                "message": sanitize_log_text(raw.decode("utf-8", "replace"), 512),
+                "type": "api_error" if anthropic else "upstream_error", "code": status}}
+            prefix = "event: error\n" if anthropic else ""
+            yield (prefix + f"data: {json.dumps(event, ensure_ascii=False)}\n\n").encode("utf-8")
+        except ValueError:
+            # Adapter metadata/append-only checks are protocol failures, not
+            # uncaught application errors after a response has opened.
+            failure = UpstreamResponseError(502, b'{"error":{"message":"Invalid upstream tool_calls",'
+                                                    b'"type":"upstream_error","code":"invalid_tool_calls"}}')
+            if not sent:
+                raise failure from None
+            status, raw = _upstream_failure(failure, model_name, t0, rid)
+            event = {"type": "error", "error": {
+                "message": sanitize_log_text(raw.decode("utf-8", "replace"), 512),
+                "type": "api_error" if anthropic else "upstream_error", "code": status}}
+            prefix = "event: error\n" if anthropic else ""
+            yield (prefix + f"data: {json.dumps(event, ensure_ascii=False)}\n\n").encode("utf-8")
+    finally:
+        # Close the nested Chat generator explicitly; do not wait for GC after
+        # an adapter error, disconnect or cancellation.
+        await _close_stream(upstream)
 
 
 async def _stream_responses(url: str, headers: dict, body: dict,
                             model_name: str = "?", t0: float = 0.0, rid: str = "", cred=None):
-    async for chunk in _stream_adapted(url, headers, body, model_name, t0, rid, cred):
-        yield chunk
+    stream = _stream_adapted(url, headers, body, model_name, t0, rid, cred)
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        await _close_stream(stream)
 
 
 # ---------------------------------------------------------------------------
@@ -3580,6 +3757,9 @@ async def create_message(request: Request,
         raise HTTPException(status_code=400, detail={"error": {"message": f"request conversion error: {e}", "type": "invalid_request_error"}})
 
     chat_body = await run_in_threadpool(_prepare_chat_body, chat_body, session_payload=payload)
+    client_wants_stream = _client_wants_stream(payload)
+    stream_policy = _snapshot_stream_policy("messages", chat_body)
+    observe_stream_mode(stream_policy.mode)
     model_name = payload.get("model", "auto")
     chat_messages = chat_body.get("messages", [])
     rid = _request_id()
@@ -3590,21 +3770,26 @@ async def create_message(request: Request,
     _log_json(f"[{rid}] ANTHROPIC → CHAT BODY (预览)", chat_body)
     t0 = time.time()
 
-    if not _client_wants_stream(payload):
+    if not client_wants_stream:
         return await _nonstream_adapted(url, headers, chat_body, model_name, t0, rid, cred,
                                         anthropic=True, payload=payload, canonical=prepared,
-                                        request=request)
+                                        request=request, policy=stream_policy)
 
     def attempt(routed, cred, headers, url):
-        return _stream_anthropic(url, headers, routed, model_name, t0, rid, cred=cred)
+        return _stream_anthropic(url, headers, _body_with_stream_policy(routed, stream_policy),
+                                 model_name, t0, rid, cred=cred)
     return _routed_stream(payload, prepared, model_name, rid, t0, attempt,
                           chat_body, cred, headers, url)
 
 
 async def _stream_anthropic(url: str, headers: dict, body: dict,
                             model_name: str = "?", t0: float = 0.0, rid: str = "", cred=None):
-    async for chunk in _stream_adapted(url, headers, body, model_name, t0, rid, cred, anthropic=True):
-        yield chunk
+    stream = _stream_adapted(url, headers, body, model_name, t0, rid, cred, anthropic=True)
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        await _close_stream(stream)
 
 
 @app.post("/v1/messages/count_tokens")
@@ -3822,6 +4007,9 @@ def main():
     ap.add_argument("--request-context-mode", choices=("legacy", "scoped"),
                     default=os.environ.get("CODEBUDDY2API_REQUEST_CONTEXT_MODE", "legacy"),
                     help="请求上下文：legacy 保持旧会话头，scoped 启用显式会话与逐尝试追踪；默认 legacy")
+    ap.add_argument("--stream-mode", choices=_STREAM_MODES,
+                    default=os.environ.get("CODEBUDDY2API_STREAM_MODE", "compatible"),
+                    help="流式传输：compatible 保持兼容聚合策略，realtime 增量发送且不重生成工具参数；默认 compatible")
     ap.add_argument("--model-capability-guard", type=_boolean_arg, nargs="?", const=True,
                     default=os.environ.get("CODEBUDDY2API_MODEL_CAPABILITY_GUARD", "true"),
                     help="按账号模型声明预检图片、工具、思考和输出上限；false 仅关闭新增能力预检")
@@ -3855,7 +4043,7 @@ def main():
     for key in ("max_images", "image_policy", "max_request_bytes", "log_body_limit",
                 "tool_call_max_retry", "max_inbound_bytes", "max_collect_bytes", "max_concurrent",
                 "failover_max", "retry_write_timeout", "upstream_keepalive", "max_inflight_per_account",
-                "request_context_mode", "model_capability_guard", "admin_allowed_origins"):
+                "request_context_mode", "stream_mode", "model_capability_guard", "admin_allowed_origins"):
         CONFIG[key] = getattr(args, key)
     CONFIG["api_key"] = args.api_key
     CONFIG["desensitize"] = args.desensitize

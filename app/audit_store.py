@@ -265,6 +265,8 @@ class AuditStore:
     def _sanitize_record(self, source):
         result = {key: safe_label(source.get(key)) for key in
                   ("upstream_model", "profile", "credential", "protocol", "error_code", "usage_source")}
+        result["stream_mode"] = (source.get("stream_mode")
+                                 if source.get("stream_mode") in ("compatible", "realtime") else None)
         result["public_model"] = safe_label(source.get("public_model", source.get("model")))
         result["model"] = result["public_model"]
         result["id"] = safe_label(source.get("id", source.get("event_id"))) or uuid.uuid4().hex

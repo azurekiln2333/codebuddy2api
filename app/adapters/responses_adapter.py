@@ -7,6 +7,9 @@ import os
 import time
 from typing import Any
 
+from app.upstream_io import (StreamOutputBudget, merge_tool_call_delta, new_tool_state,
+                             seal_tool_identities, tool_identity_complete)
+
 # ---------------------------------------------------------------------------
 # ID generation
 # ---------------------------------------------------------------------------
@@ -267,11 +270,19 @@ def _convert_tools_for_chat(tools: list) -> list:
 class ResponsesStreamConverter:
     """Convert Chat SSE increments into Responses events."""
 
-    def __init__(self, model: str = "unknown", parallel_tool_calls: bool = True):
+    def __init__(self, model: str = "unknown", parallel_tool_calls: bool = True, *,
+                 realtime: bool = False, budget: StreamOutputBudget | None = None,
+                 tool_states: dict | None = None, declared_names=None):
         self.resp_id = _rand_id("resp_")
         self.msg_id = _rand_id("msg_")
         self.model = model
         self._parallel_tool_calls = bool(parallel_tool_calls)
+        self._realtime = bool(realtime)
+        self._budget = budget if budget is not None else StreamOutputBudget(0)
+        self._tool_states = tool_states
+        self._local_tool_states: dict[int, dict] = {}
+        self._declared_names = frozenset(
+            value for value in (declared_names or ()) if isinstance(value, str) and value)
         self.created_at = int(time.time())
 
         # Stream state
@@ -285,9 +296,14 @@ class ResponsesStreamConverter:
         self._reasoning = ""
         self._reasoning_item_id = _rand_id("rs_")
         self._emitted_reasoning_item = False
-        self._tool_calls: dict[int, dict] = {}  # index → {id, name, args, fc_id, output_idx, emitted}
+        self._reasoning_output_idx: int | None = None
+        self._message_output_idx: int | None = None
+        self._tool_calls: dict[int, dict] = {}  # index → stable output item state
+        self._output_order: list[tuple[str, int | None]] = []
+        self._next_output_idx = 0
         self._finish_reason: str | None = None
         self._usage: dict | None = None
+        self._content_filter = False
         self._seq = 0  # Monotonic emitted-event sequence
     # Public methods
 
@@ -307,7 +323,19 @@ class ResponsesStreamConverter:
 
     def finish(self) -> str:
         """Close output items and emit the terminal response status."""
+        if self._realtime:
+            if (self._tool_calls and self._finish_reason not in
+                    ("tool_calls", "length", "content_filter", "content-filter", "refusal")
+                    and not self._content_filter):
+                raise ValueError("tool calls require a tool_calls finish reason")
+            seal_tool_identities(self._tool_states if self._tool_states is not None
+                                 else self._local_tool_states, self._declared_names)
+            pending = self._flush_ready_tools()
+        else:
+            pending = []
         status, reason = self._final_status()
+        if self._realtime:
+            return "".join(pending) + self._finish_realtime(status)
         events: list[str] = []
 
         # Close reasoning items.
@@ -356,6 +384,64 @@ class ResponsesStreamConverter:
         }))
         return "".join(events)
 
+    def mark_content_filter(self) -> None:
+        """Keep a detector-confirmed refusal from becoming a successful terminal."""
+        self._content_filter = True
+
+    def set_validated_tools(self, tool_calls) -> None:
+        """Accept terminal tool metadata already validated by the shared Chat accumulator."""
+        if not self._realtime:
+            return
+        expected = [self._tool_calls[index] for index in sorted(self._tool_calls)]
+        if len(expected) != len(tool_calls or []):
+            raise ValueError("validated tool calls do not match stream items")
+        for slot, call in zip(expected, tool_calls or []):
+            function = call.get("function") or {}
+            state = slot.get("state")
+            values = ((slot.get("id"), call.get("id")),
+                      (slot.get("name"), function.get("name")))
+            if state is not None:
+                values += ((state.get("id"), call.get("id")),
+                           (state.get("name"), function.get("name")),
+                           (state.get("arguments"), function.get("arguments")))
+            if any(left != right for left, right in values):
+                raise ValueError("validated tool metadata does not match stream items")
+            slot["validated"] = True
+
+    def _finish_realtime(self, status: str) -> str:
+        events: list[str] = []
+        for kind, index in self._output_order:
+            if kind == "reasoning" and self._emitted_reasoning_item:
+                output_index = self._reasoning_output_idx
+                events.append(self._evt("response.reasoning_summary_text.done", {
+                    "output_index": output_index, "summary_index": 0, "text": self._reasoning,
+                    "item_id": self._reasoning_item_id}))
+                events.append(self._evt("response.output_item.done", {
+                    "output_index": output_index, "item": self._reasoning_item(status)}))
+            elif kind == "message" and self._emitted_msg_item:
+                output_index = self._message_output_idx
+                events.append(self._evt("response.output_text.done", {
+                    "output_index": output_index, "content_index": 0, "text": self._content,
+                    "item_id": self.msg_id}))
+                events.append(self._evt("response.content_part.done", {
+                    "output_index": output_index, "content_index": 0,
+                    "part": {"type": "output_text", "text": self._content, "annotations": []},
+                    "item_id": self.msg_id}))
+                events.append(self._evt("response.output_item.done", {
+                    "output_index": output_index, "item": self._msg_item(status)}))
+            elif kind == "tool":
+                slot = self._tool_calls[index]
+                if slot.get("emitted"):
+                    output_index = slot["output_idx"]
+                    events.append(self._evt("response.function_call_arguments.done", {
+                        "output_index": output_index, "arguments": self._tool_arguments(slot),
+                        "item_id": slot["fc_id"]}))
+                    events.append(self._evt("response.output_item.done", {
+                        "output_index": output_index, "item": self._fc_item(slot, status)}))
+        events.append(self._evt(f"response.{status}", {
+            "response": self._response_obj(status, incomplete_reason=self._final_status()[1])}))
+        return "".join(events)
+
     def get_nonstream_response(self) -> dict:
         """Return the complete non-streaming Response object."""
         status, reason = self._final_status()
@@ -364,6 +450,8 @@ class ResponsesStreamConverter:
     def _final_status(self) -> tuple[str, str | None]:
         """Map finish reasons to response status without hiding truncation or filtering."""
         fr = self._finish_reason
+        if self._content_filter and fr in (None, "stop", "tool_calls"):
+            return "incomplete", "content_filter"
         if fr in (None, "stop", "tool_calls"):
             return "completed", None
         if fr == "length":
@@ -393,21 +481,29 @@ class ResponsesStreamConverter:
 
         for choice in chunk.get("choices", []):
             delta = choice.get("delta", {})
-            finish = choice.get("finish_reason")
+            finish = choice.get("finish_reason") or None
+            if self._finish_reason is not None:
+                if (any(delta.get(key) for key in ("content", "reasoning_content", "refusal"))
+                        or bool(delta.get("tool_calls")) or bool(delta.get("function_call"))):
+                    raise ValueError("output after finish_reason")
+                if finish is not None and finish != self._finish_reason:
+                    raise ValueError("changed finish_reason")
 
             # Emit reasoning before message content.
             reasoning = delta.get("reasoning_content")
             if reasoning:
                 if not self._emitted_reasoning_item:
+                    self._reasoning_output_idx = self._claim_output("reasoning")
                     events.append(self._evt("response.output_item.added", {
-                        "output_index": 0,
+                        "output_index": self._reasoning_output_idx,
                         "item": {"type": "reasoning", "id": self._reasoning_item_id,
                                  "summary": [], "status": "in_progress"}
                     }))
                     self._emitted_reasoning_item = True
+                self._budget.charge_text(reasoning)
                 self._reasoning += reasoning
                 events.append(self._evt("response.reasoning_summary_text.delta", {
-                    "output_index": 0, "summary_index": 0, "delta": reasoning,
+                    "output_index": self._reasoning_output_idx, "summary_index": 0, "delta": reasoning,
                     "item_id": self._reasoning_item_id
                 }))
 
@@ -415,8 +511,9 @@ class ResponsesStreamConverter:
             content = (delta.get("content") or "") + (delta.get("refusal") or "")
             if content:
                 if not self._emitted_msg_item:
+                    self._message_output_idx = self._claim_output("message")
                     events.append(self._evt("response.output_item.added", {
-                        "output_index": self._msg_idx(),
+                        "output_index": self._message_output_idx,
                         "item": self._msg_item("in_progress", empty=True)
                     }))
                     self._emitted_msg_item = True
@@ -429,6 +526,7 @@ class ResponsesStreamConverter:
                     }))
                     self._emitted_content_part = True
 
+                self._budget.charge_text(content)
                 self._content += content
                 events.append(self._evt("response.output_text.delta", {
                     "output_index": self._msg_idx(), "content_index": 0, "delta": content,
@@ -439,44 +537,47 @@ class ResponsesStreamConverter:
             for tc in delta.get("tool_calls", []):
                 idx = tc.get("index", 0)
                 if idx not in self._tool_calls:
-                    # Place function calls after reasoning and message items.
-                    base = (1 if self._emitted_reasoning_item else 0) + \
-                           (1 if (self._emitted_msg_item or self._content) else 0)
-                    oi = base + len(self._tool_calls)
+                    output_idx = None if self._realtime else self._claim_output("tool", idx)
                     self._tool_calls[idx] = {
-                        "id": tc.get("id", ""),
-                        "name": "",
-                        "args": "",
-                        "fc_id": _rand_id("fc_"),
-                        "output_idx": oi,
-                        "emitted": False,
+                        "id": tc.get("id", ""), "name": "", "args": "",
+                        "fc_id": _rand_id("fc_"), "output_idx": output_idx,
+                        "emitted": False, "emitted_args_length": 0,
                     }
                 slot = self._tool_calls[idx]
-                if tc.get("id"):
-                    slot["id"] = tc["id"]
-                fn = tc.get("function", {})
-                if fn.get("name"):
-                    slot["name"] = fn["name"]
+                if self._realtime:
+                    state = self._sync_tool_state(idx, tc)
+                    slot["state"] = state
+                else:
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function", {})
+                    if fn.get("name"):
+                        slot["name"] = fn["name"]
+                    slot["_pending_args"] = fn.get("arguments") or ""
 
-                if not slot["emitted"]:
-                    # Ensure the message item exists even when empty.
-                    if not self._emitted_msg_item and (self._content or not self._tool_calls):
-                        pass
-                    events.append(self._evt("response.output_item.added", {
-                        "output_index": slot["output_idx"],
-                        "item": self._fc_item(slot, "in_progress")
-                    }))
-                    slot["emitted"] = True
-
-                if fn.get("arguments"):
-                    slot["args"] += fn["arguments"]
-                    events.append(self._evt("response.function_call_arguments.delta", {
-                        "output_index": slot["output_idx"],
-                        "delta": fn["arguments"], "item_id": slot["fc_id"]
-                    }))
+                if self._realtime:
+                    events.extend(self._flush_tool_slot(idx, slot))
+                else:
+                    if not slot["emitted"]:
+                        events.append(self._evt("response.output_item.added", {
+                            "output_index": slot["output_idx"],
+                            "item": self._fc_item(slot, "in_progress")
+                        }))
+                        slot["emitted"] = True
+                    arguments = self._new_tool_arguments(slot)
+                    if arguments:
+                        events.append(self._evt("response.function_call_arguments.delta", {
+                            "output_index": slot["output_idx"],
+                            "delta": arguments, "item_id": slot["fc_id"]
+                        }))
 
             if finish:
                 self._finish_reason = finish
+                if self._realtime:
+                    seal_tool_identities(self._tool_states if self._tool_states is not None
+                                         else self._local_tool_states, self._declared_names)
+                    for pending_idx in sorted(self._tool_calls):
+                        events.extend(self._flush_tool_slot(pending_idx, self._tool_calls[pending_idx]))
 
         return "".join(events)
 
@@ -486,9 +587,95 @@ class ResponsesStreamConverter:
         payload = {"type": event_type, **data, "sequence_number": self._seq}
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+    def _claim_output(self, kind: str, index: int | None = None) -> int:
+        if self._realtime:
+            output_index = self._next_output_idx
+            self._next_output_idx += 1
+            self._output_order.append((kind, index))
+            return output_index
+        if kind == "reasoning":
+            return 0
+        if kind == "message":
+            return 1 if self._emitted_reasoning_item else 0
+        return ((1 if self._emitted_reasoning_item else 0)
+                + (1 if self._emitted_msg_item else 0) + len(self._tool_calls))
+
+    def _sync_tool_state(self, index: int, tool: dict) -> dict:
+        state = ((self._tool_states or {}).get(index)
+                 if self._tool_states is not None else self._local_tool_states.get(index))
+        if state is None:
+            if self._tool_states is not None:
+                raise ValueError("tool state missing from realtime accumulator")
+            state = new_tool_state()
+            self._local_tool_states[index] = state
+        if self._tool_states is None:
+            merge_tool_call_delta(state, tool, declared_names=self._declared_names,
+                                  charge=self._budget.charge_text)
+        else:
+            state["identity_complete"] = tool_identity_complete(
+                state, self._declared_names, terminal=bool(state.get("_terminal")))
+        slot = self._tool_calls[index]
+        slot["id"] = state.get("id") or ""
+        slot["name"] = state.get("name") or ""
+        return state
+
+    def _flush_tool_slot(self, index: int, slot: dict) -> list[str]:
+        """Start one ready tool and flush its buffered arguments exactly once."""
+        if not self._realtime:
+            return []
+        state = slot.get("state")
+        if state is None or not state.get("identity_complete"):
+            return []
+        if not slot.get("emitted"):
+            if slot.get("output_idx") is None:
+                slot["output_idx"] = self._claim_output("tool", index)
+            events = [self._evt("response.output_item.added", {
+                "output_index": slot["output_idx"],
+                "item": self._fc_item(slot, "in_progress", include_arguments=False)
+            })]
+            slot["emitted"] = True
+            state["identity_emitted"] = True
+        else:
+            events = []
+        arguments = self._new_tool_arguments(slot)
+        if arguments:
+            events.append(self._evt("response.function_call_arguments.delta", {
+                "output_index": slot["output_idx"],
+                "delta": arguments, "item_id": slot["fc_id"]
+            }))
+        return events
+
+    def _flush_ready_tools(self) -> list[str]:
+        events: list[str] = []
+        for index in sorted(self._tool_calls):
+            events.extend(self._flush_tool_slot(index, self._tool_calls[index]))
+        return events
+
+    def _tool_arguments(self, slot: dict) -> str:
+        if self._realtime and slot.get("state") is not None:
+            return slot["state"].get("arguments") or ""
+        return slot["args"]
+
+    def _new_tool_arguments(self, slot: dict) -> str:
+        if not self._realtime:
+            piece = slot.get("_pending_args", "")
+            slot["args"] += piece
+            return piece
+        if not slot.get("emitted"):
+            return ""
+        arguments = self._tool_arguments(slot)
+        emitted = slot.get("emitted_args_length", 0)
+        if len(arguments) < emitted or not arguments.startswith(slot.get("_emitted_prefix", "")):
+            raise ValueError("non-append-only tool arguments")
+        piece = arguments[emitted:]
+        slot["emitted_args_length"] = len(arguments)
+        slot["_emitted_prefix"] = arguments
+        return piece
+
     def _msg_idx(self) -> int:
-        """Place the message at index one when reasoning occupies index zero."""
-        return 1 if self._emitted_reasoning_item else 0
+        """Return the stable message index in realtime mode or the canonical placement."""
+        return (self._message_output_idx if self._realtime else
+                1 if self._emitted_reasoning_item else 0)
 
     def _reasoning_item(self, status: str) -> dict:
         """Build a reasoning item with its text in the first summary block."""
@@ -507,26 +694,35 @@ class ResponsesStreamConverter:
             "content": content,
         }
 
-    def _fc_item(self, tc: dict, status: str) -> dict:
+    def _fc_item(self, tc: dict, status: str, *, include_arguments: bool = True) -> dict:
         return {
             "type": "function_call",
             "id": tc["fc_id"],
-            "call_id": tc["id"],
-            "name": tc["name"],
-            "arguments": tc["args"],
+            "call_id": tc["id"] or (tc.get("state", {}).get("id") or ""),
+            "name": tc["name"] or (tc.get("state", {}).get("name") or ""),
+            "arguments": self._tool_arguments(tc) if include_arguments else "",
             "status": status,
         }
 
     def _response_obj(self, status: str, incomplete_reason: str | None = None) -> dict:
         output = []
-        if self._emitted_reasoning_item:
-            output.append(self._reasoning_item(status))
-        if self._emitted_msg_item or self._content:
-            output.append(self._msg_item(status))
-        for idx in sorted(self._tool_calls):
-            tc = self._tool_calls[idx]
-            if tc.get("emitted"):
-                output.append(self._fc_item(tc, status))
+        if self._realtime:
+            for kind, index in self._output_order:
+                if kind == "reasoning" and self._emitted_reasoning_item:
+                    output.append(self._reasoning_item(status))
+                elif kind == "message" and self._emitted_msg_item:
+                    output.append(self._msg_item(status))
+                elif kind == "tool" and self._tool_calls[index].get("emitted"):
+                    output.append(self._fc_item(self._tool_calls[index], status))
+        else:
+            if self._emitted_reasoning_item:
+                output.append(self._reasoning_item(status))
+            if self._emitted_msg_item or self._content:
+                output.append(self._msg_item(status))
+            for idx in sorted(self._tool_calls):
+                tc = self._tool_calls[idx]
+                if tc.get("emitted"):
+                    output.append(self._fc_item(tc, status))
 
         usage = None
         if self._usage:
