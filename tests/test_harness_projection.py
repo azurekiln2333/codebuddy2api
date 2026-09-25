@@ -192,6 +192,44 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(json.loads(wire)["_truncated"]["original_bytes"], len(arguments.encode("utf-8")))
         self.assertEqual(stats["truncated_items"], 1)
 
+    def test_large_fitting_tool_arguments_are_unchanged(self):
+        arguments = json.dumps({"items": ['escaped " quote and NaN'] + ["x" * 1000] * 1099}, separators=(",", ":"))
+        argument_bytes = len(arguments.encode("utf-8"))
+        self.assertGreater(argument_bytes, 1024 * 1024)
+        self.assertLessEqual(argument_bytes, 2_000_000)
+        messages = [{"role": "assistant", "content": "", "tool_calls": [{
+            "id": "large-fitting", "type": "function",
+            "function": {"name": "large", "arguments": arguments},
+        }]}]
+        payload = body(messages, [])
+        before = deepcopy(payload)
+        with patch("app.adapters.responses_projection.json.loads") as loads:
+            result, stats = project_responses_chat_body(payload, max_item_bytes=2_000_000)
+        loads.assert_not_called()
+        self.assertEqual(payload, before)
+        wire = result["messages"][0]["tool_calls"][0]["function"]["arguments"]
+        self.assertEqual(wire, arguments)
+        self.assertEqual(stats["truncated_items"], 0)
+
+    def test_large_fitting_arguments_reject_nonstandard_constants_without_parsing(self):
+        arguments = '{"prefix":"' + ("x" * 1_100_000) + '","bad":NaN}'
+        self.assertGreater(len(arguments.encode("utf-8")), 1024 * 1024)
+        messages = [{"role": "assistant", "content": "", "tool_calls": [{
+            "id": "large-nan", "type": "function",
+            "function": {"name": "large", "arguments": arguments},
+        }]}]
+        with patch("app.adapters.responses_projection.json.loads") as loads:
+            result, stats = project_responses_chat_body(body(messages, []), max_item_bytes=2_000_000)
+        loads.assert_not_called()
+        wire = result["messages"][0]["tool_calls"][0]["function"]["arguments"]
+
+        def reject_constant(value):
+            raise ValueError(f"unexpected constant: {value}")
+
+        parsed = json.loads(wire, parse_constant=reject_constant)
+        self.assertIn("_truncated", parsed)
+        self.assertEqual(stats["truncated_items"], 1)
+
     def test_escape_dense_wrapper_keeps_both_edges(self):
         arguments = json.dumps({"x": "\\" * 60000}, separators=(",", ":"))
         messages = [{"role": "assistant", "content": "", "tool_calls": [{

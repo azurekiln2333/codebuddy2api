@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.harness_context import parse_harness_text
@@ -15,6 +16,7 @@ _TEXT_TYPES = {"text", "input_text", "output_text"}
 _JSON_OVERHEAD_RESERVE = 256
 _MAX_TOOL_ARGUMENTS_PARSE_BYTES = 1024 * 1024
 _MAX_WRAPPER_EDGE_BYTES = 8192
+_JSON_QUOTE_OR_NONSTANDARD = re.compile(r'"|NaN|-?Infinity')
 
 
 class _InvalidJsonConstant(ValueError):
@@ -23,6 +25,38 @@ class _InvalidJsonConstant(ValueError):
 
 def _reject_json_constant(value: str) -> None:
     raise _InvalidJsonConstant(f"unsupported JSON constant: {value}")
+
+
+def _find_unescaped_quote(text: str, start: int) -> int:
+    """Find the next unescaped quote without copying the string."""
+    cursor = start
+    while True:
+        quote = text.find('"', cursor)
+        if quote < 0:
+            return -1
+        slash = quote - 1
+        backslashes = 0
+        while slash >= start and text[slash] == "\\":
+            backslashes += 1
+            slash -= 1
+        if backslashes % 2 == 0:
+            return quote
+        cursor = quote + 1
+
+
+def _contains_nonstandard_json_constant(text: str) -> bool:
+    """Detect bare non-standard JSON constants without materializing parsed data."""
+    cursor = 0
+    while True:
+        match = _JSON_QUOTE_OR_NONSTANDARD.search(text, cursor)
+        if match is None:
+            return False
+        if text[match.start()] != '"':
+            return True
+        quote = _find_unescaped_quote(text, match.end())
+        if quote < 0:
+            return False
+        cursor = quote + 1
 
 
 def project_responses_chat_body(
@@ -158,6 +192,9 @@ def _project_tool_call(tool_call: Any, max_item_bytes: int, counters: dict[str, 
         return projected
     argument_bytes = len(arguments.encode("utf-8"))
     if argument_bytes > _MAX_TOOL_ARGUMENTS_PARSE_BYTES:
+        if (argument_bytes <= max_item_bytes
+                and not _contains_nonstandard_json_constant(arguments)):
+            return projected
         function["arguments"] = _truncate_json_argument_text(arguments, max_item_bytes, counters)
         projected["function"] = function
         return projected
