@@ -55,6 +55,8 @@ Configure these hot settings through the WebUI, CLI, process environment or `.en
 
 `responses_projection_max_bytes` defaults to `40000`; valid values are `0` or `256..33554432`. `0` disables per-item truncation only; global inbound/request and output gates still apply. Neither setting changes the client Base URL.
 
+Downgrading to source that predates these keys requires the offline removal of `settings.responses_projection_mode` and `settings.responses_projection_max_bytes` described under [Streaming modes](#streaming-modes).
+
 ### Tool metadata retention
 
 Responses projection no longer changes tool definitions or schemas. When desensitization is enabled, it strips tool descriptions and string `description/title` annotations by default; enabling this setting retains and processes that text across Chat, Responses and Messages. `--no-compact` does not change this setting.
@@ -78,12 +80,16 @@ Realtime mode never regenerates malformed or incomplete tool arguments. Tool IDs
 
 Explicit filter-only terminals are valid even without output: realtime Responses emits `response.incomplete` with `content_filter`, retaining available usage. This does not permit an ordinary empty response, missing terminal or error frame to succeed.
 
-For runtime fallback, select `compatible` to restore aggregate streaming and tool-argument repair without changing saved state. Before running older source, remove the new CLI/environment option, stop the gateway and back up the **current** data directory, including its SQLite/WAL/SHM generation. Do not restore a stale pre-upgrade database: that could roll back newer claims, sessions, revocations and account state. The following offline procedure writes only the removal of `settings.stream_mode` and a revision increment, then checks integrity; all other settings and tables remain intact. Never run it against a live database or mix SQLite generations.
+For runtime fallback, select `compatible` to restore aggregate streaming and tool-argument repair without changing saved state. Before running older source, remove the new CLI/environment option, stop the gateway and back up the **current** data directory, including its SQLite/WAL/SHM generation. Do not restore a stale pre-upgrade database: that could roll back newer claims, sessions, revocations and account state. The following offline procedure deletes only the listed `settings.<name>` keys and increments the revision, then checks integrity; all other settings and tables remain intact. Pass one key or several. Never run it against a live database or mix SQLite generations.
 
 ```sh
-python3 - /path/to/control.sqlite3 <<'PY'
+python3 - /path/to/control.sqlite3 settings.stream_mode <<'PY'
 import json, sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
+path, names = sys.argv[1], sys.argv[2:]
+keys = [name.split(".", 1)[1] for name in names if name.count(".") == 1 and name.split(".", 1)[1]]
+if len(keys) != len(names):
+    raise SystemExit("pass one or more settings.<name> keys")
+con = sqlite3.connect(path)
 try:
     con.execute("BEGIN IMMEDIATE")
     row = con.execute("SELECT revision,payload FROM control WHERE id=1").fetchone()
@@ -93,9 +99,11 @@ try:
     data = json.loads(payload)
     if set(data) != {"settings", "models", "credentials"} or not isinstance(data["settings"], dict):
         raise SystemExit("unexpected control payload")
-    if "stream_mode" not in data["settings"]:
-        raise SystemExit("stream_mode is absent; no write needed")
-    del data["settings"]["stream_mode"]
+    present = [key for key in keys if key in data["settings"]]
+    if not present:
+        raise SystemExit("no requested key is present; no write needed")
+    for key in present:
+        del data["settings"][key]
     con.execute("UPDATE control SET revision=?,payload=? WHERE id=1",
                 (revision + 1, json.dumps(data, ensure_ascii=False, allow_nan=False)))
     con.commit()
@@ -284,4 +292,4 @@ Both international profiles merge image-bearing consecutive `user` runs only aft
 
 ## Downgrades and rollback
 
-Feature switches hold no hidden state: disabling a guard or mode stops it for new requests, and reverting source restores previous behavior. The exceptions are persisted settings and automation state: `control.sqlite3` stores WebUI settings, model rules and reward reservations, and older code rejects unknown fields. Before downgrading source, remove newly added startup options, stop the service, back up the **current** data directory, and use the narrowly scoped offline `settings.stream_mode` removal procedure above with a revision increment and integrity check. Do not restore a pre-upgrade database or mix WAL/SHM generations: doing so could roll back newer claims, sessions, revocations and account state. Rollback never undoes completed upstream check-ins, claims or travel dispatches.
+Feature switches hold no hidden state: disabling a guard or mode stops it for new requests, and reverting source restores previous behavior. The exceptions are persisted settings and automation state: `control.sqlite3` stores WebUI settings, model rules and reward reservations, and older code rejects unknown fields. Before downgrading source, remove newly added startup options, stop the service, back up the **current** data directory, and use the narrowly scoped offline `settings.<name>` removal procedure above with a revision increment and integrity check. Do not restore a pre-upgrade database or mix WAL/SHM generations: doing so could roll back newer claims, sessions, revocations and account state. Rollback never undoes completed upstream check-ins, claims or travel dispatches.

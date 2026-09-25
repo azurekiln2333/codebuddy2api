@@ -55,6 +55,8 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 
 `responses_projection_max_bytes` 默认 `40000`，有效范围为 `0` 或 `256..33554432`。`0` 只禁用单项裁剪，仍受全局入站/请求与输出门禁约束。两项设置均不改变客户端 Base URL。
 
+降级到不含这些键的旧源码时，需按[流式模式](#流式模式)所述离线删除 `settings.responses_projection_mode` 与 `settings.responses_projection_max_bytes`。
+
 ### 工具元数据保留
 
 Responses 投影不再修改工具定义或 schema。启用脱敏时，默认剥离工具描述及参数 schema 的字符串 `description/title`；开启本开关后，Chat、Responses、Messages 会保留并按脱敏规则处理这些文本。`--no-compact` 不改变本开关。
@@ -78,12 +80,16 @@ Responses 投影不再修改工具定义或 schema。启用脱敏时，默认剥
 
 明确的纯审核拒绝即使没有正文也保留原生终态：实时 Responses 返回 `response.incomplete`，原因是 `content_filter`，并保留已有用量。普通空响应、缺少终止标记及错误帧仍不得伪装成功。
 
-运行时选回 `compatible` 即可恢复聚合流式及工具参数重生成，保留当前保存状态。源码降级前，移除新增 CLI/环境选项，停止网关并备份**当前**数据目录及同一代 SQLite/WAL/SHM。不要恢复升级前旧库，否则可能回滚新的领取、会话、撤销和账号状态。下例会离线写入当前数据库：仅删除 `settings.stream_mode`、递增 revision 并检查完整性，其它设置和表保持不变；禁止对运行中的数据库执行或混用 SQLite 文件代数。
+运行时选回 `compatible` 即可恢复聚合流式及工具参数重生成，保留当前保存状态。源码降级前，移除新增 CLI/环境选项，停止网关并备份**当前**数据目录及同一代 SQLite/WAL/SHM。不要恢复升级前旧库，否则可能回滚新的领取、会话、撤销和账号状态。下例会离线写入当前数据库：仅删除列出的 `settings.<name>` 键、递增 revision 并检查完整性，其它设置和表保持不变；可传一个或多个键。禁止对运行中的数据库执行或混用 SQLite 文件代数。
 
 ```sh
-python3 - /path/to/control.sqlite3 <<'PY'
+python3 - /path/to/control.sqlite3 settings.stream_mode <<'PY'
 import json, sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
+path, names = sys.argv[1], sys.argv[2:]
+keys = [name.split(".", 1)[1] for name in names if name.count(".") == 1 and name.split(".", 1)[1]]
+if len(keys) != len(names):
+    raise SystemExit("pass one or more settings.<name> keys")
+con = sqlite3.connect(path)
 try:
     con.execute("BEGIN IMMEDIATE")
     row = con.execute("SELECT revision,payload FROM control WHERE id=1").fetchone()
@@ -93,9 +99,11 @@ try:
     data = json.loads(payload)
     if set(data) != {"settings", "models", "credentials"} or not isinstance(data["settings"], dict):
         raise SystemExit("unexpected control payload")
-    if "stream_mode" not in data["settings"]:
-        raise SystemExit("stream_mode is absent; no write needed")
-    del data["settings"]["stream_mode"]
+    present = [key for key in keys if key in data["settings"]]
+    if not present:
+        raise SystemExit("no requested key is present; no write needed")
+    for key in present:
+        del data["settings"][key]
     con.execute("UPDATE control SET revision=?,payload=? WHERE id=1",
                 (revision + 1, json.dumps(data, ensure_ascii=False, allow_nan=False)))
     con.commit()
@@ -284,4 +292,4 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 
 ## 降级与回滚
 
-功能开关不藏隐状态：关闭守卫或模式即对新请求停止生效，回退源码即恢复旧行为。例外是持久化设置与自动化状态：`control.sqlite3` 保存 WebUI 设置、模型规则与奖励预留，旧代码会拒绝未知字段。源码降级前移除新增的启动参数，停止服务，备份**当前**数据目录，并使用上面的窄范围离线 `settings.stream_mode` 删除流程，递增 revision 并执行完整性检查。不要恢复升级前数据库，也不要混用 WAL/SHM 代数，否则可能回滚较新的领取、会话、撤销和账号状态。回滚无法撤销已完成的上游签到、领取或旅行派出。
+功能开关不藏隐状态：关闭守卫或模式即对新请求停止生效，回退源码即恢复旧行为。例外是持久化设置与自动化状态：`control.sqlite3` 保存 WebUI 设置、模型规则与奖励预留，旧代码会拒绝未知字段。源码降级前移除新增的启动参数，停止服务，备份**当前**数据目录，并使用上面的窄范围离线 `settings.<name>` 删除流程，递增 revision 并执行完整性检查。不要恢复升级前数据库，也不要混用 WAL/SHM 代数，否则可能回滚较新的领取、会话、撤销和账号状态。回滚无法撤销已完成的上游签到、领取或旅行派出。
