@@ -30,6 +30,8 @@ Compose explicitly passes some environment variables and CLI flags, so deleting 
 | `--model-capability-guard [true/false]` | `true` | Preflight declared image, tool, reasoning and mapped output limits; changes affect new requests |
 | `--max-images` | `16` | Total images per request; `0` permits no images |
 | `--image-policy` | `truncate` | Keep newest images; `error` rejects excess images with 413 |
+| `--responses-projection-mode balanced\|passthrough` | `balanced` | Rewrite recognized harness blocks that have stable summaries; passthrough disables Responses projection |
+| `--responses-projection-max-bytes` | `40000` | Complete per-item UTF-8 limit for assistant text, tool-argument JSON and tool results; `0` disables, otherwise valid range is `256..33554432` |
 | `--tool-call-max-retry` | `3` | Extra generations after malformed tool calls (each consumes credits); `0` disables retries |
 | `--max-inbound-bytes` | `67108864` | Raw body limit for generation and token-count POSTs, before parsing (chunked included); other routes are not buffered; 413 beyond it |
 | `--max-collect-bytes` | `8388608` | Total retained-output budget for aggregation and realtime validation (content + reasoning + tool arguments/metadata); `response_too_large` beyond it; `0` disables |
@@ -43,17 +45,25 @@ Compose explicitly passes some environment variables and CLI flags, so deleting 
 | `--max-request-bytes` | `33554432` | Positive byte limit for the processed upstream JSON |
 | `--log-body-limit` | `65536` | Legacy text-preview option; text output is retired and SQLite diagnostics use their own budget |
 
-Environment variables include `CODEBUDDY_AUTH_DIR`, `CODEBUDDY_IMPORT_DIR`, `CODEBUDDY2API_KEY`, `CODEBUDDY2API_ADMIN_CSRF`, `CODEBUDDY2API_ADMIN_ORIGINS`, `CODEBUDDY2API_KEEP_TOOL_METADATA`, `CODEBUDDY2API_STREAM_MODE`, `CODEBUDDY2API_LOG`, `CODEBUDDY2API_MAX_IMAGES`, `CODEBUDDY2API_IMAGE_POLICY`, `CODEBUDDY2API_MAX_REQUEST_BYTES`, `CODEBUDDY2API_LOG_BODY_LIMIT`, `CODEBUDDY2API_FAILOVER_MAX` and `CODEBUDDY2API_RETRY_WRITE_TIMEOUT`. See [deployment](deployment.md) for startup examples.
+Environment variables include `CODEBUDDY_AUTH_DIR`, `CODEBUDDY_IMPORT_DIR`, `CODEBUDDY2API_KEY`, `CODEBUDDY2API_ADMIN_CSRF`, `CODEBUDDY2API_ADMIN_ORIGINS`, `CODEBUDDY2API_KEEP_TOOL_METADATA`, `CODEBUDDY2API_STREAM_MODE`, `CODEBUDDY2API_LOG`, `CODEBUDDY2API_RESPONSES_PROJECTION_MODE`, `CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES`, `CODEBUDDY2API_MAX_IMAGES`, `CODEBUDDY2API_IMAGE_POLICY`, `CODEBUDDY2API_MAX_REQUEST_BYTES`, `CODEBUDDY2API_LOG_BODY_LIMIT`, `CODEBUDDY2API_FAILOVER_MAX` and `CODEBUDDY2API_RETRY_WRITE_TIMEOUT`. See [deployment](deployment.md) for startup examples.
+
+### Responses projection
+
+Configure these hot settings through the WebUI, CLI, process environment or `.env`. Precedence is CLI > process environment > `.env` > saved SQLite value > default; CLI/environment values lock the WebUI fields. Compose forwards a variable only when the host environment sets it, so leaving both unset keeps the WebUI editable.
+
+`responses_projection_mode` defaults to `balanced` and accepts only `balanced` or `passthrough`. Balanced mode rewrites only recognized harness blocks that have stable summaries; text outside those blocks is not budgeted or truncated. It also applies Codex-style head/tail truncation to generated assistant content, complete tool-argument JSON and tool results according to `responses_projection_max_bytes`. Text markers report original bytes, estimated tokens and total lines. Oversized tool arguments remain valid JSON and use a bounded object containing the original head, tail and size metadata. Passthrough disables Responses projection completely.
+
+`responses_projection_max_bytes` defaults to `40000`; valid values are `0` or `256..33554432`. `0` disables per-item truncation only; global inbound/request and output gates still apply. Neither setting changes the client Base URL.
 
 ### Tool metadata retention
 
-Off by default, preserving the existing policy: desensitization strips tool descriptions, and Responses tool projection also strips them; `--no-compact` does not change this. When enabled, Chat, Responses and Messages retain supported tool descriptions and string `description/title` annotations in parameter schemas. With desensitization enabled, retained text is still processed. Prompt compaction and existing content-filter retry conditions/counts are unchanged; fallback processing also respects this option.
+Responses projection no longer changes tool definitions or schemas. When desensitization is enabled, it strips tool descriptions and string `description/title` annotations by default; enabling this setting retains and processes that text across Chat, Responses and Messages. `--no-compact` does not change this setting.
 
 - **WebUI:** Settings → Keep tool descriptions; unlocked changes apply immediately and persist.
 - **CLI:** append `--keep-tool-metadata` or `--keep-tool-metadata true` to the existing command; explicit `false` overrides the environment.
 - **Environment:** set `CODEBUDDY2API_KEEP_TOOL_METADATA=true`. Compose passes it only when set, leaving the WebUI unlocked otherwise. Remove or comment out the variable to remove the environment lock; do not set an empty string.
 
-Use a source/image build and Compose configuration containing this feature; recreate containers after changing their environment. Retained descriptions may increase input tokens and content-filter rejections; compatibility across accounts/models is not guaranteed. Set `false` to restore the previous policy. This option does not restore other schema fields or deep nodes removed by existing Responses projection, nor relax the request-size budget.
+Use a source/image build and Compose configuration containing this feature; recreate containers after changing its environment. Retained descriptions may increase input tokens and content-filter risk; set `false` to restore the desensitization default. This setting does not change Responses balanced/passthrough mode or relax request-size limits.
 
 ### Streaming modes
 
@@ -227,7 +237,7 @@ Both international profiles merge image-bearing consecutive `user` runs only aft
 
 ## Request boundaries
 
-- All three generation protocols normalize `developer` to `system`, move an existing system message first or insert a default. This normalization does not mutate the caller's payload. Responses projection and optional desensitization process content separately; the whole pipeline is not a verbatim pass-through.
+- All three generation protocols normalize `developer` to `system`, move an existing system message first or insert a default. This normalization does not mutate the caller's payload. Optional [Responses projection](#responses-projection) and desensitization process content separately; the whole pipeline is not a verbatim pass-through by default.
 - Images count across all history and tool results, including duplicates, in message/content array order. The default keeps the newest 16, removing only excess images while retaining text and message structure; emptied image content receives a text placeholder.
 - `--image-policy error` returns local `413 / too_many_images`. JSON still over budget after processing returns `413 / request_too_large`, without further text truncation to fit the limit.
 - Image count does not guarantee acceptable individual image sizes or model vision support. URL/base64 images can be converted; Responses image `file_id` is unsupported.

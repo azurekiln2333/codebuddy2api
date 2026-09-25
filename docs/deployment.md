@@ -15,8 +15,7 @@ On first setup, run `cp .env.example .env` and set `CODEBUDDY2API_KEY` to your o
 | `CODEBUDDY2API_AUTH_PATH` | Compose host data directory; defaults to `./auth`, mounted at `/data/auth` |
 | `CODEBUDDY_AUTH_DIR` | Local Python data directory; defaults to the repository's `auth/`. Compose sets it to `/data/auth` inside the container |
 | `CODEBUDDY_IMPORT_DIR` | Optional import directory; defaults to `imports/` under the data directory. Use container paths with Compose |
-
-The example lists all active runtime variables, including inbound/aggregate byte limits, concurrency, tool retries and failover. Compose forwards these limits; unset optional settings (tool metadata, origin allowlist, failover and similar) remain configurable in the WebUI. Zero disables the aggregate/concurrency limit or extra retries, not the required positive inbound limit.
+The example lists all active runtime variables, including inbound/aggregate byte limits, concurrency, tool retries and failover. Compose forwards these limits; unset optional settings (tool metadata, Responses projection, origin allowlist, failover and similar) remain configurable in the WebUI. Zero disables aggregate/concurrency limits, per-item Responses trimming or extra retries, not the required positive inbound limit.
 
 Compose reads declared variables from `.env`; shell variables take precedence. The default host mapping is loopback. Set a random key, HTTPS and access restrictions before allowing remote connections. Container binding remains `0.0.0.0:8787`; change host exposure using `BIND/PORT`, not container listener arguments.
 

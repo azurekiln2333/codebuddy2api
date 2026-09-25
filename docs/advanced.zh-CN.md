@@ -30,6 +30,8 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 | `--model-capability-guard [true/false]` | `true` | 预检模型声明的图片、工具、思考及已映射输出上限；新请求生效 |
 | `--max-images` | `16` | 单请求图片总数；`0` 不允许图片 |
 | `--image-policy` | `truncate` | 保留最新图片；设为 `error` 时超限返回 413 |
+| `--responses-projection-mode balanced\|passthrough` | `balanced` | 仅改写有固定摘要的已识别 harness；passthrough 完全关闭 Responses 投影 |
+| `--responses-projection-max-bytes` | `40000` | assistant、完整工具参数 JSON 与工具结果的单项 UTF-8 字节上限；`0` 禁用，`256..33554432` 为有效范围 |
 | `--tool-call-max-retry` | `3` | 工具参数损坏时的额外生成上限（每次都消耗额度）；`0` 不重试 |
 | `--max-inbound-bytes` | `67108864` | 生成及 token 估算 POST 的解析前原始字节上限（含 chunked），超限 413；其他路由不缓冲请求体 |
 | `--max-collect-bytes` | `8388608` | 聚合及实时校验所需保留输出的总字节上限（正文+思考+工具参数/元数据），超限返回 `response_too_large`；`0` 不限制 |
@@ -43,17 +45,25 @@ Compose 会显式传入部分环境变量及 CLI 参数，删除 `.env` 中的�
 | `--max-request-bytes` | `33554432` | 处理后的上游 JSON 字节上限，须为正整数 |
 | `--log-body-limit` | `65536` | 旧文本预览兼容项；文本输出已停用，SQLite 诊断使用独立预算 |
 
-环境变量包括 `CODEBUDDY_AUTH_DIR`、`CODEBUDDY_IMPORT_DIR`、`CODEBUDDY2API_KEY`、`CODEBUDDY2API_ADMIN_CSRF`、`CODEBUDDY2API_ADMIN_ORIGINS`、`CODEBUDDY2API_KEEP_TOOL_METADATA`、`CODEBUDDY2API_STREAM_MODE`、`CODEBUDDY2API_LOG`，以及 `CODEBUDDY2API_MAX_IMAGES`、`CODEBUDDY2API_IMAGE_POLICY`、`CODEBUDDY2API_MAX_REQUEST_BYTES`、`CODEBUDDY2API_LOG_BODY_LIMIT`、`CODEBUDDY2API_FAILOVER_MAX`、`CODEBUDDY2API_RETRY_WRITE_TIMEOUT`。启动示例见[部署指南](deployment.zh-CN.md)。
+环境变量包括 `CODEBUDDY_AUTH_DIR`、`CODEBUDDY_IMPORT_DIR`、`CODEBUDDY2API_KEY`、`CODEBUDDY2API_ADMIN_CSRF`、`CODEBUDDY2API_ADMIN_ORIGINS`、`CODEBUDDY2API_KEEP_TOOL_METADATA`、`CODEBUDDY2API_STREAM_MODE`、`CODEBUDDY2API_LOG`、`CODEBUDDY2API_RESPONSES_PROJECTION_MODE`、`CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES`、`CODEBUDDY2API_MAX_IMAGES`、`CODEBUDDY2API_IMAGE_POLICY`、`CODEBUDDY2API_MAX_REQUEST_BYTES`、`CODEBUDDY2API_LOG_BODY_LIMIT`、`CODEBUDDY2API_FAILOVER_MAX`、`CODEBUDDY2API_RETRY_WRITE_TIMEOUT`。启动示例见[部署指南](deployment.zh-CN.md)。
+
+### Responses 投影
+
+通过 WebUI、CLI、环境变量或 `.env` 配置这两项热更新设置。优先级为 CLI > 进程环境变量 > `.env` > SQLite 保存值 > 默认值；CLI/环境变量会锁定 WebUI 字段。Compose 仅转发宿主环境已设置的变量，两项均未设置时 WebUI 仍可编辑。
+
+`responses_projection_mode` 默认为 `balanced`，仅接受 `balanced` 和 `passthrough`。balanced 仅改写有固定摘要的已识别 harness；这些块之外的文本不计入预算、不会被裁剪。它还会按 `responses_projection_max_bytes` 对 assistant 内容、完整工具参数 JSON 和工具结果采用 Codex 风格头尾截断；文本标记显示原始 bytes、估算 tokens 与总行数。超限工具参数仍是有效 JSON，并以有界对象保留原始头尾和大小元数据。passthrough 完全关闭 Responses 投影。
+
+`responses_projection_max_bytes` 默认 `40000`，有效范围为 `0` 或 `256..33554432`。`0` 只禁用单项裁剪，仍受全局入站/请求与输出门禁约束。两项设置均不改变客户端 Base URL。
 
 ### 工具元数据保留
 
-默认关闭，沿用旧策略：启用脱敏会剥离工具描述，Responses 的工具投影也会剥离描述；`--no-compact` 不改变这一行为。开启后，Chat、Responses、Messages 保留已支持工具定义中的描述及参数 schema 的字符串 `description/title`。若启用脱敏，保留的文本仍会处理；提示词压缩、现有审核兜底条件与重试次数不变，兜底也遵守本开关。
+Responses 投影不再修改工具定义或 schema。启用脱敏时，默认剥离工具描述及参数 schema 的字符串 `description/title`；开启本开关后，Chat、Responses、Messages 会保留并按脱敏规则处理这些文本。`--no-compact` 不改变本开关。
 
 - **WebUI**：系统设置 → 保留工具描述，未被启动来源锁定时可立即生效并持久化。
 - **CLI**：在原启动命令追加 `--keep-tool-metadata` 或 `--keep-tool-metadata true`；显式 `false` 可覆盖环境变量。
 - **环境变量**：设置 `CODEBUDDY2API_KEEP_TOOL_METADATA=true`；Compose 会传入已设置的值，未设置时不锁定 WebUI。删除或注释变量可解除环境锁定，不要设为空串。
 
-需使用包含此功能的源码/镜像和 Compose 配置；修改容器环境后重新创建容器。保留描述可能增加输入 token 和审核拦截风险，不保证所有账号/模型都同样兼容；设为 `false` 可恢复旧策略。此开关不恢复 Responses 原有投影裁掉的其他 schema 字段或深层节点，也不放宽请求体预算。
+需使用包含此功能的源码/镜像和 Compose 配置；修改容器环境后重新创建容器。保留描述可能增加输入 token 和审核拦截风险；设为 `false` 恢复脱敏默认剥离行为。此开关不改变 Responses 的 balanced/passthrough 模式，也不放宽请求体预算。
 
 ### 流式模式
 
@@ -227,7 +237,7 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 
 ## 请求边界
 
-- 三个生成协议统一将 `developer` 归一为 `system`，已有 system 移到首位，缺失时补默认值；归一化不修改调用方 payload。Responses 上下文投影和可选脱敏另行处理内容，不能据此理解为整个链路逐字透传。
+- 三个生成协议统一将 `developer` 归一为 `system`，已有 system 移到首位，缺失时补默认值；归一化不修改调用方 payload。可选的 [Responses 投影](#responses-投影)和脱敏会另行处理内容，因此默认链路并非逐字透传。
 - 图片计入全部历史和工具结果，重复图片逐次计数，按消息与内容块数组顺序判断新旧。默认保留最新 16 张，只移除超额图片并保留文本和消息结构；图片清空的内容用文本占位。
 - `--image-policy error` 在本地返回 `413 / too_many_images`。处理后仍超过字节上限则返回 `413 / request_too_large`，不为满足预算继续截断文本。
 - 图片数量合规不保证单图大小或模型视觉能力满足上游要求。URL/base64 图片可转换，Responses 图片 `file_id` 不支持。

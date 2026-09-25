@@ -85,6 +85,7 @@ The template binds to localhost only. Configure HTTPS and restrict network acces
 - **No Docker?** After installing dependencies and the WebUI, run `uv run converter.py` or `python3 converter.py` without `.env`. First local startup saves a default key and displays it once — see [Local Python setup](docs/deployment.md#local-python-setup).
 - **Where is my data?** Everything lives in `auth/` (or `/data/auth` in Docker): credentials, settings and log databases — see [Data and backups](docs/webui.md#data-and-backups).
 - **Which image tag should I use?** `latest` follows stable releases, `edge` follows main, version tags pin one release — see [Published images](docs/deployment.md#use-published-images).
+- **Responses tool output/arguments compressed or need verbatim passthrough?** Set `responses_projection_mode` (default `balanced`, or `passthrough` to disable projection) and `responses_projection_max_bytes` (default `40000`, `0` disables per-item trimming). Balanced trimming keeps the head/tail and reports original bytes, estimated tokens and total lines; client addresses stay unchanged — see [Responses projection](docs/clients.md#responses-projection) and [details](docs/advanced.md#responses-projection).
 
 ## Disclaimer
 
