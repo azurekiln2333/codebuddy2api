@@ -45,6 +45,10 @@ codex --profile workbuddy "your task"
 
 Codex 使用 `/v1/responses`。运行时上下文与真实指令分开处理；请求超限返回 HTTP 413，而不会静默截断最新的用户请求。
 
+## Responses 投影
+
+Responses 投影是服务端设置，客户端地址保持不变。默认使用 balanced；如需完全关闭 Responses 投影可设 passthrough。生成内容与工具内容的裁剪上限见 [Responses 投影](advanced.zh-CN.md#responses-投影)。
+
 ## Claude Code / CC Switch
 
 ```bash

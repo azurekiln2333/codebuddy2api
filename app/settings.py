@@ -33,6 +33,12 @@ def normalize_allowed_origins(value):
     return ",".join(normalized)
 
 
+def validate_projection_max_bytes(value):
+    """Allow zero or enough room for a bounded head/tail warning."""
+    if value != 0 and value < 256:
+        raise ValueError("responses_projection_max_bytes 必须为 0 或至少 256")
+    return value
+
 
 def _item(default, type_, label, *, mode="hot", env=None, minimum=None, maximum=None,
           choices=None, sensitive=False, allow_empty=False, max_length=255, validator=None):
@@ -87,6 +93,13 @@ SCHEMA = {
                                       env="CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT", minimum=0, maximum=10000),
     "request_context_mode": _item("legacy", "string", "请求上下文模式",
                                   env="CODEBUDDY2API_REQUEST_CONTEXT_MODE", choices=["legacy", "scoped"]),
+    "responses_projection_mode": _item("balanced", "string", "Responses 投影模式",
+                                      env="CODEBUDDY2API_RESPONSES_PROJECTION_MODE",
+                                      choices=["balanced", "passthrough"]),
+    "responses_projection_max_bytes": _item(
+        40000, "integer", "Responses 单项字节上限（0 或 ≥256）",
+        env="CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES", minimum=0, maximum=33554432,
+        validator=validate_projection_max_bytes),
     "stream_mode": _item("compatible", "string", "流式模式（实时模式不重生成工具参数）",
                          env="CODEBUDDY2API_STREAM_MODE", choices=["compatible", "realtime"]),
     "audit_max_bytes": _item(256 * 1024 * 1024, "integer", "审计明细预算", minimum=1024**2, maximum=1024**4),

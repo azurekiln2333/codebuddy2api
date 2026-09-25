@@ -160,6 +160,9 @@ def _convert_input_items(items: list) -> list[dict]:
 
         # Merge calls into the preceding assistant message.
         if item_type == "function_call":
+            arguments = item.get("arguments", "{}")
+            if not isinstance(arguments, str):
+                raise ValueError("function_call.arguments must be a JSON string")
             if pending_assistant_content is None:
                 pending_assistant_content = ""
             pending_tool_calls.append({
@@ -167,7 +170,7 @@ def _convert_input_items(items: list) -> list[dict]:
                 "type": "function",
                 "function": {
                     "name": item.get("name", ""),
-                    "arguments": item.get("arguments", "{}"),
+                    "arguments": arguments,
                 },
             })
             continue

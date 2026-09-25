@@ -267,6 +267,11 @@ class AuditStore:
                   ("upstream_model", "profile", "credential", "protocol", "error_code", "usage_source")}
         result["stream_mode"] = (source.get("stream_mode")
                                  if source.get("stream_mode") in ("compatible", "realtime") else None)
+        projection_mode = source.get("responses_projection_mode")
+        if projection_mode in ("balanced", "passthrough"):
+            result["responses_projection_mode"] = projection_mode
+            result["responses_projection_max_bytes"] = number(source.get("responses_projection_max_bytes"))
+            result["responses_truncated_items"] = number(source.get("responses_truncated_items"))
         result["public_model"] = safe_label(source.get("public_model", source.get("model")))
         result["model"] = result["public_model"]
         result["id"] = safe_label(source.get("id", source.get("event_id"))) or uuid.uuid4().hex

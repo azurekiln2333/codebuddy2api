@@ -45,6 +45,10 @@ codex --profile workbuddy "your task"
 
 Codex uses `/v1/responses`. Runtime context is processed separately from real instructions; oversized requests return HTTP 413 rather than silently truncating the latest user request.
 
+## Responses projection
+
+Responses projection is a server setting; client addresses do not change. Balanced mode is the default, while `passthrough` disables Responses projection completely. To change generated assistant/tool truncation limits, see [Responses projection](advanced.md#responses-projection).
+
 ## Claude Code / CC Switch
 
 ```bash

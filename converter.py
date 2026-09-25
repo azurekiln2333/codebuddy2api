@@ -42,7 +42,7 @@ from app.adapters.responses_adapter import (
     responses_request_to_chat,
     ResponsesStreamConverter,
 )
-from app.adapters.responses_projection import project_responses_chat_body
+from app.adapters.responses_projection import PROJECTION_MODES, project_responses_chat_body
 from app.adapters.anthropic_adapter import (
     anthropic_request_to_chat,
     AnthropicStreamConverter,
@@ -56,8 +56,8 @@ from app.model_blocks import ModelBlocks
 from app.usage_snapshots import UsageSnapshots
 from app.client_hangup import ClientHungUp, await_or_hangup
 from app.observability import (AuditMiddleware, observe_recovery, observe_route, observe_stream_mode,
-                               observe_usage, observe_attempt, observe_failure,
-                               observe_failure_seq)
+                               observe_responses_projection, observe_usage, observe_attempt,
+                               observe_failure, observe_failure_seq)
 from app.credential_io import (CredentialFileError, read_import_file, atomic_write_credential,
                                credential_file_lock)
 from app.upstream_io import (ChatSSEAccumulator, StreamOutputBudget, UpstreamHTTPError,
@@ -1818,6 +1818,7 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "upstream_keepalive": False, "max_inflight_per_account": 0,
                 "request_context_mode": "legacy",
                 "stream_mode": "compatible", "model_capability_guard": True,
+                "responses_projection_mode": "balanced", "responses_projection_max_bytes": 40000,
                 "failover_max": 0,     # Credential failovers allowed before the first response byte
                 "retry_write_timeout": False,  # Opt-in replay after incomplete writes
                 "usage_daily": None,     # Usage aggregated by date and model
@@ -3586,8 +3587,18 @@ async def create_response(request: Request,
         raise HTTPException(status_code=400, detail={"error": {"message": f"request conversion error: {e}", "type": "invalid_request_error"}})
 
     await run_in_threadpool(_bind_request_session, payload, chat_body)
-    chat_body, projection_stats = project_responses_chat_body(
-        chat_body, keep_tool_metadata=CONFIG.get("keep_tool_metadata", False))
+    projection_mode = CONFIG.get("responses_projection_mode", "balanced")
+    projection_max_bytes = int(CONFIG.get("responses_projection_max_bytes", 40000))
+    try:
+        chat_body, projection_stats = await run_in_threadpool(
+            project_responses_chat_body, chat_body, mode=projection_mode,
+            max_item_bytes=projection_max_bytes)
+    except UnicodeError:
+        raise HTTPException(status_code=400, detail={"error": {
+            "message": "request contains text that cannot be encoded as UTF-8",
+            "type": "invalid_request_error", "param": "input",
+            "code": "invalid_unicode"}}) from None
+    observe_responses_projection(projection_stats)
     chat_body = await run_in_threadpool(_prepare_chat_body, chat_body)
 
     client_wants_stream = _client_wants_stream(payload)
@@ -3603,9 +3614,10 @@ async def create_response(request: Request,
         f"| chars {projection_stats.get('original_message_chars')}→{projection_stats.get('projected_message_chars')} "
         f"| tools {projection_stats.get('original_tools')}→{projection_stats.get('projected_tools')} "
         f"| tool_chars {projection_stats.get('original_tool_chars')}→{projection_stats.get('projected_tool_chars')} "
-        f"| summarized_history={projection_stats.get('summarized_history_messages', 0)} "
-        f"| dropped_harness={projection_stats.get('dropped_harness_messages', 0)} "
-        f"| anchor_user={projection_stats.get('anchor_user_preserved', False)}"
+        f"| harness_messages={projection_stats.get('harness_messages_projected', 0)} "
+        f"| truncated_items={projection_stats.get('truncated_items', 0)} "
+        f"| truncated_bytes={projection_stats.get('truncated_original_bytes', 0)}→"
+        f"{projection_stats.get('truncated_projected_bytes', 0)}"
     )
     # Keep blocking credential selection and refresh off the event loop.
     prepared = chat_body        # Preserve canonical input for routing policy checks.
@@ -3617,11 +3629,16 @@ async def create_response(request: Request,
         def attempt(routed, cred, headers, url):
             return _stream_responses(url, headers, _body_with_stream_policy(routed, stream_policy),
                                      model_name, t0, rid, cred=cred)
-        return _routed_stream(payload, prepared, model_name, rid, t0, attempt,
-                              chat_body, cred, headers, url)
+        response = _routed_stream(payload, prepared, model_name, rid, t0, attempt,
+                                    chat_body, cred, headers, url)
+        response.headers["X-CodeBuddy-Responses-Projection"] = projection_mode
+        return response
 
-    return await _nonstream_adapted(url, headers, chat_body, model_name, t0, rid, cred,
-                                    payload=payload, canonical=prepared, request=request, policy=stream_policy)
+    response = await _nonstream_adapted(
+        url, headers, chat_body, model_name, t0, rid, cred, payload=payload, canonical=prepared,
+        request=request, policy=stream_policy)
+    response.headers["X-CodeBuddy-Responses-Projection"] = projection_mode
+    return response
 
 
 async def _nonstream_adapted(url, headers, body, model_name, t0, rid, cred, *, anthropic=False,
@@ -3917,6 +3934,14 @@ def _positive_int(value):
         raise argparse.ArgumentTypeError("必须为正整数")
     return number
 
+def _projection_bytes_arg(value):
+    number = _nonnegative_int(value)
+    if number != 0 and number < 256:
+        raise argparse.ArgumentTypeError("必须为 0 或至少 256")
+    if number > 33554432:
+        raise argparse.ArgumentTypeError("不能超过 33554432")
+    return number
+
 
 def _origins_arg(value):
     from app.settings import normalize_allowed_origins
@@ -3967,6 +3992,12 @@ def main():
     ap.add_argument("--keep-tool-metadata", type=_boolean_arg, nargs="?", const=True,
                     default=os.environ.get("CODEBUDDY2API_KEEP_TOOL_METADATA", "false"),
                     help="保留工具描述及参数 description/title；启用脱敏时仍处理描述文本，默认 false")
+    ap.add_argument("--responses-projection-mode", choices=PROJECTION_MODES,
+                    default=os.environ.get("CODEBUDDY2API_RESPONSES_PROJECTION_MODE", "balanced"),
+                    help="Responses 上下文：balanced 仅改写有固定摘要的已识别 harness，其余文本原样保留；passthrough 完全关闭投影；默认 balanced")
+    ap.add_argument("--responses-projection-max-bytes", type=_projection_bytes_arg, metavar="BYTES",
+                    default=os.environ.get("CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES", "40000"),
+                    help="Responses 单项 UTF-8 字节上限；0 禁用，非零范围 256..33554432，默认 40000")
     ap.add_argument("--skip-check", action="store_true", help="跳过启动预检")
     ap.add_argument("--auth-file", action="append", default=[], metavar="PATH",
                     help="凭据文件（可重复传入组成凭证池；默认自动扫描 auth 目录全部 *.info）")
@@ -4043,7 +4074,8 @@ def main():
     for key in ("max_images", "image_policy", "max_request_bytes", "log_body_limit",
                 "tool_call_max_retry", "max_inbound_bytes", "max_collect_bytes", "max_concurrent",
                 "failover_max", "retry_write_timeout", "upstream_keepalive", "max_inflight_per_account",
-                "request_context_mode", "stream_mode", "model_capability_guard", "admin_allowed_origins"):
+                "request_context_mode", "stream_mode", "model_capability_guard", "admin_allowed_origins",
+                "responses_projection_mode", "responses_projection_max_bytes"):
         CONFIG[key] = getattr(args, key)
     CONFIG["api_key"] = args.api_key
     CONFIG["desensitize"] = args.desensitize
