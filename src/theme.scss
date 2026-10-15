@@ -1,0 +1,77 @@
+// AzureKiln semantic tokens, derived from the approved administration study.
+:root {
+  color-scheme: light;
+  --accent: #005ab7;
+  --strong: #19232e;
+  --text: #242b33;
+  --muted: #657180;
+  --subtle: #75818e;
+  --line: #e2e7ed;
+  --line-strong: #cbd3dd;
+  --page: #f7f9fb;
+  --surface: #fff;
+  --surface-tint: #f0f3f6;
+  --soft: #f5f7f9;
+  --selected: #edf4fc;
+  --primary-line: #cddff3;
+  --shadow: #142c481a;
+  --veil: #182a424d;
+  --primary: #005ab7;
+  --primary-hover: #004c9b;
+  --on-primary: #fff;
+  --error: #b3363b;
+  --error-bg: #fdf0f0;
+  --warning: #875b0f;
+  --warning-bg: #fff7e9;
+  --good: #227558;
+  --good-bg: #edf6f0;
+  --series-requests: #005ab7;
+  --series-tokens: #227558;
+  --series-credit: #946313;
+  --font:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --radius: 6px;
+  --panel-radius: 10px;
+  --control-height: 36px;
+  --card: var(--soft);
+}
+
+@mixin dark {
+  color-scheme: dark;
+  --accent: #78b4f1;
+  --strong: #f1f4f8;
+  --text: #d3dce6;
+  --muted: #9ba7b5;
+  --subtle: #96a2b0;
+  --line: #303a46;
+  --line-strong: #465261;
+  --page: #151a20;
+  --surface: #1c222a;
+  --surface-tint: #252d37;
+  --soft: #222a34;
+  --selected: #24364b;
+  --primary-line: #345377;
+  --shadow: #00000040;
+  --veil: #050b14a6;
+  --primary: #78b4f1;
+  --primary-hover: #9bc8f7;
+  --on-primary: #0d2842;
+  --error: #f09598;
+  --error-bg: #402b30;
+  --warning: #e1bb72;
+  --warning-bg: #3b3326;
+  --good: #81cba8;
+  --good-bg: #243b32;
+  --series-requests: #78b4f1;
+  --series-tokens: #81cba8;
+  --series-credit: #e1bb72;
+}
+:root[data-theme="dark"] {
+  @include dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    @include dark;
+  }
+}
