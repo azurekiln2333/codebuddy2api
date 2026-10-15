@@ -195,6 +195,11 @@ bypassing the gateway.
 
 ## Validation limits
 
+For a storage-management `Not Found`, see
+[storage diagnostics](./storage-diagnostics.md) for the verified source routes
+and two read-only checks against the running backend. A local passing test
+does not identify the cause in a separate deployment.
+
 Real OIDC credentials and public TLS are environment-specific and are not
 verified by the repository's automated checks. Use a faithful local OIDC mock
 for CI, and treat Docker/Nginx acceptance as a manual, credentialed step.

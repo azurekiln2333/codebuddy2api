@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/gateway-security.md","reason":"Verify auth/CSRF and no credential leakage"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Original backend test evidence and read-only boundary"}
+{"file":"docs/internal-contract.md","reason":"Preserve transparent upstream errors"}
+{"file":"docs/ui-contract.md","reason":"Browser API behavior"}

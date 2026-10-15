@@ -47,6 +47,10 @@ upstream cookie/CSRF bridge. Shared types live in `sessions.ts`.
 - `/admin/logs/clear`, `scope:'all'`: require exact confirmation
   `清空全部日志与统计`, then replace any browser key with server key. Other
   scopes receive no injected key. Body must be a bounded JSON object.
+- Storage uses original backend `GET /admin/storage` and
+  `POST /admin/storage/archive` with integer `days` in 1–3650. Preserve upstream
+  status/body, including missing-route 404. Diagnose deployed route availability
+  before adding a fallback; do not manufacture storage data or hide errors.
 - `/v1/*` preserves caller Bearer/X-Api-Key, drops cookies/identity/hop headers,
   and injects no server credentials. Responses drop upstream Set-Cookie, CORS
   and Connection-nominated headers.

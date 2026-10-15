@@ -137,6 +137,52 @@ describe("original FastAPI backend integration", () => {
     assert.ok(!client.cookies.has("cb_admin_session"));
   });
 
+  it("reads real storage accounting and archives without exposing the backend cookie", async (t) => {
+    requireBackend();
+    const { client } = await login(gw, idp);
+    const res = await client.get("/admin/storage");
+    assert.equal(res.status, 200, res.body);
+    const storage = client.json<Record<string, unknown>>(res);
+    for (const field of ["db_bytes", "wal_bytes", "shm_bytes", "logical_bytes", "max_bytes", "reclaimable_bytes", "retention_days"]) {
+      assert.equal(typeof storage[field], "number", `${field} must be numeric`);
+      assert.ok(Number.isFinite(storage[field]) && Number(storage[field]) >= 0, `${field} must be finite and nonnegative`);
+    }
+    assert.ok(Array.isArray(storage.archives));
+    assert.ok(storage.archives.every((file) => typeof file === "string"));
+    assert.equal(storage.degraded, false);
+    assert.equal(res.setCookie.length, 0);
+    assert.ok(!client.cookies.has("cb_admin_session"));
+    t.diagnostic(`GET /admin/storage ${res.status}: ${res.body}`);
+  });
+
+  it("archives real storage with the UI's 30-day request through the CSRF bridge", async (t) => {
+    requireBackend();
+    const { client } = await login(gw, idp);
+    const session = client.json<{ csrf_token: string }>(await client.get("/sso/session"));
+    const res = await client.post("/admin/storage/archive", { days: 30 }, {
+      headers: { origin: gw.origin, "x-csrf-token": session.csrf_token },
+    });
+    assert.equal(res.status, 200, res.body);
+    // Isolated fixture records are recent; empty archives succeed without a file.
+    assert.deepEqual(client.json(res), { ok: true, archived_requests: 0, archived_events: 0, file: null });
+    assert.equal(res.setCookie.length, 0);
+    t.diagnostic(`POST /admin/storage/archive ${res.status}: ${res.body}`);
+  });
+
+  it("preserves the real storage archive validation error for zero days", async (t) => {
+    requireBackend();
+    const { client } = await login(gw, idp);
+    const session = client.json<{ csrf_token: string }>(await client.get("/sso/session"));
+    const res = await client.post("/admin/storage/archive", { days: 0 }, {
+      headers: { origin: gw.origin, "x-csrf-token": session.csrf_token },
+    });
+    assert.equal(res.status, 400, res.body);
+    assert.deepEqual(client.json(res), {
+      error: { message: "请求参数、配置或策略无效，请检查类型、范围及冲突", type: "admin_error" },
+    });
+    t.diagnostic(`POST /admin/storage/archive days=0 ${res.status}: ${res.body}`);
+  });
+
   it("performs a real full-log clear with confirmation through the bridge", async () => {
     requireBackend();
     const { client } = await login(gw, idp);

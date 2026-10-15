@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/gateway-security.md","reason":"Gateway trust boundaries and raw paths"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Compiled JS tests and isolated original backend"}
+{"file":"docs/internal-contract.md","reason":"Authorization and transparent proxy interfaces"}
+{"file":"docs/ui-contract.md","reason":"Frozen browser and gateway routes"}
