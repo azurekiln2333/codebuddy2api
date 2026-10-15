@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
 import { endSession, establishSession, errorMessage, SSO_LOGIN_URL, useSession } from "./api";
-import { ErrorNotice, Icon } from "./components";
+import { Drawer, ErrorNotice, Icon } from "./components";
 import { Dashboard } from "./pages/Dashboard";
 import { Models } from "./pages/Models";
 import { Credentials } from "./pages/Credentials";
@@ -12,14 +12,30 @@ import { Appearance } from "./appearance";
 import s from "./ui.module.scss";
 import { LanguageProvider, useT } from "./i18n";
 
-const navigation = [
-  ["", "nav.overview", "grid"],
-  ["/models", "nav.models", "model"],
-  ["/credentials", "nav.credentials", "key"],
-  ["/logs", "nav.logs", "logs"],
-  ["/storage", "nav.storage", "database"],
-  ["/settings", "nav.settings", "settings"],
+const navigationGroups = [
+  {
+    title: "app.navGroup.workspace",
+    items: [
+      ["", "nav.overview", "grid"],
+      ["/logs", "nav.logs", "logs"],
+    ],
+  },
+  {
+    title: "app.navGroup.resources",
+    items: [
+      ["/credentials", "nav.credentials", "key"],
+      ["/models", "nav.models", "model"],
+    ],
+  },
+  {
+    title: "app.navGroup.system",
+    items: [
+      ["/storage", "nav.storage", "database"],
+      ["/settings", "nav.settings", "settings"],
+    ],
+  },
 ];
+const navigation = navigationGroups.flatMap((group) => group.items);
 function BrandMark() {
   return (
     <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
@@ -44,7 +60,7 @@ export function Guard() {
   if (status === "error" || status === "forbidden")
     return (
       <div className={s.center}>
-        {status === "forbidden" && <h1>无管理权限</h1>}
+        {status === "forbidden" && <h1>{t("app.accessDenied")}</h1>}
         <ErrorNotice
           message={error}
           retry={() => {
@@ -52,7 +68,7 @@ export function Guard() {
           }}
         />
         <a className={s.linkButton} href={SSO_LOGIN_URL}>
-          {status === "forbidden" ? "使用其他账号登录" : t("app.backToSignIn")}
+          {status === "forbidden" ? t("app.otherAccount") : t("app.backToSignIn")}
         </a>
       </div>
     );
@@ -64,6 +80,20 @@ function Shell() {
   const user = useSession((state) => state.user);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mobile, setMobile] = useState(
+    () => window.matchMedia?.("(max-width: 800px)").matches ?? false,
+  );
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 800px)");
+    if (!media) return;
+    const changed = () => {
+      setMobile(media.matches);
+      setNavigationOpen(false);
+    };
+    media.addEventListener("change", changed);
+    return () => media.removeEventListener("change", changed);
+  }, []);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem("azurekiln.sidebar.collapsed") === "true";
@@ -80,95 +110,151 @@ function Shell() {
       /* Session-only preference when storage is unavailable. */
     }
   };
+  const renderNavigation = (inDrawer = false) => (
+    <nav
+      id={inDrawer ? "mobile-navigation" : "workspace-navigation"}
+      aria-label={t("app.primaryNav")}
+    >
+      {navigationGroups.map((group) => (
+        <div className={s.navGroup} key={group.title}>
+          <p className={s.navLabel}>{t(group.title)}</p>
+          {group.items.map(([path, labelKey, icon]) => {
+            const label = t(labelKey);
+            return (
+              <NavLink
+                key={path}
+                to={
+                  path === ""
+                    ? location.pathname === "/dashboard"
+                      ? "/dashboard"
+                      : "/dashboard/"
+                    : `/dashboard${path}`
+                }
+                end={path === ""}
+                aria-label={label}
+                title={!inDrawer && collapsed ? label : undefined}
+                data-label={label}
+                onClick={() => setNavigationOpen(false)}
+                className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
+              >
+                <Icon name={icon} />
+                <span className={s.navText}>{label}</span>
+              </NavLink>
+            );
+          })}
+        </div>
+      ))}
+    </nav>
+  );
   return (
     <div className={`${s.app} ${collapsed ? s.collapsed : ""}`}>
       <a href="#main" className={s.skip}>
         {t("app.skip")}
       </a>
-      <aside className={s.sidebar}>
-        <div className={s.sidebarHead}>
-          <NavLink className={s.brand} to="/dashboard/" aria-label="AzureKiln 管理概览">
+      <header className={s.header}>
+        <div className={s.headerBrand}>
+          <button
+            type="button"
+            className={s.sidebarToggle}
+            onClick={() => (mobile ? setNavigationOpen(true) : toggleSidebar())}
+            aria-label={
+              mobile
+                ? t("app.openNavigation")
+                : collapsed
+                  ? t("app.expandSidebar")
+                  : t("app.collapseSidebar")
+            }
+            aria-expanded={mobile ? navigationOpen : !collapsed}
+            aria-controls={mobile ? "mobile-navigation" : "workspace-navigation"}
+            aria-haspopup={mobile ? "dialog" : undefined}
+            title={
+              mobile
+                ? t("app.openNavigation")
+                : collapsed
+                  ? t("app.expandSidebar")
+                  : t("app.collapseSidebar")
+            }
+          >
+            <Icon name={mobile ? "menu" : collapsed ? "expand" : "collapse"} />
+          </button>
+          <NavLink className={s.brand} to="/dashboard/" aria-label={t("app.brandAria")}>
             <span className={s.brandIcon}>
               <BrandMark />
             </span>
-            <span className={s.brandText}>
-              AzureKiln<small>{t("app.brandSubtitle")}</small>
-            </span>
+            <span className={s.brandText}>AzureKiln</span>
           </NavLink>
+          <span className={s.headerContext}>{t("app.brandSubtitle")}</span>
+        </div>
+        <div className={s.actions}>
+          <Appearance />
+          <span className={s.session} title={user?.sub}>
+            <span />
+            {user?.name || user?.username || t("app.sessionActive")}
+          </span>
           <button
-            className={s.sidebarToggle}
-            onClick={toggleSidebar}
-            aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
-            aria-expanded={!collapsed}
-            aria-controls="workspace-navigation"
-            title={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setError(null);
+              void endSession()
+                .catch((err: unknown) => setError(errorMessage(err)))
+                .finally(() => setBusy(false));
+            }}
           >
-            <Icon name={collapsed ? "expand" : "collapse"} />
+            {t("app.signOut")}
           </button>
         </div>
-        <p className={s.navLabel}>{t("app.workspace")}</p>
-        <nav id="workspace-navigation" aria-label={t("app.primaryNav")}>
-          {navigation.map(([path, labelKey, icon]) => {
-            const label = t(labelKey);
-            return (
-              <NavLink
-                key={path}
-                to={`/dashboard${path}`}
-                end={path === ""}
-                aria-label={label}
-                title={collapsed ? label : undefined}
-                data-label={label}
-                className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
-              >
-                <Icon name={icon} />
-                <span className={s.navText}>{label}</span>
-                <span className={s.navArrow}>
-                  <Icon name="arrow" />
-                </span>
-              </NavLink>
-            );
-          })}
-        </nav>
-      </aside>
-      <div className={s.workspace}>
-        <header className={s.header}>
-          <span>
-            {t("app.workspace")} <span className={s.separator}>/</span>{" "}
-            {t(
-              navigation.find(([path]) => `/dashboard${path}` === location.pathname)?.[1] ??
-                "nav.overview",
-            )}
-          </span>
-          <div className={s.actions}>
-            <Appearance />
-            <span className={s.session} title={user?.sub}>
-              <span />
-              {user?.name || user?.username || t("app.sessionActive")}
+      </header>
+      {!mobile && (
+        <aside className={s.sidebar}>
+          <div className={s.sidebarWorkspace}>
+            <span className={s.workspaceSymbol}>
+              <Icon name="shield" />
             </span>
-            <button
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                setError(null);
-                void endSession()
-                  .catch((err: unknown) => setError(errorMessage(err)))
-                  .finally(() => setBusy(false));
-              }}
-            >
-              {t("app.signOut")}
-            </button>
+            <div className={s.workspaceLabel}>
+              <strong>{t("app.adminWorkspace")}</strong>
+              <small>{t("app.administrator")}</small>
+            </div>
           </div>
-        </header>
+          {renderNavigation()}
+          <div className={s.sidebarFoot}>
+            <span className={s.statusDot} />
+            <span>{t("app.adminSession")}</span>
+          </div>
+        </aside>
+      )}
+      {mobile && navigationOpen && (
+        <Drawer
+          title={t("app.primaryNav")}
+          className={s.navigationDrawer}
+          onClose={() => setNavigationOpen(false)}
+        >
+          {renderNavigation(true)}
+        </Drawer>
+      )}
+      <div className={s.workspace}>
         <main id="main" className={s.main}>
+          <div className={s.breadcrumb} aria-label={t("app.breadcrumb")}>
+            <span>{t("app.workspace")}</span>
+            <span aria-hidden="true">/</span>
+            <span>
+              {t(
+                navigation.find(
+                  ([path]) => `/dashboard${path}` === location.pathname.replace(/\/$/, ""),
+                )?.[1] ?? "nav.overview",
+              )}
+            </span>
+          </div>
           <ErrorNotice message={error} />
           <Outlet />
         </main>
-        <footer className={s.footer}>AzureKiln · 管理控制台</footer>
+        <footer className={s.footer}>AzureKiln · {t("app.brandSubtitle")}</footer>
       </div>
     </div>
   );
 }
 function Login() {
+  const t = useT();
   const { status, error } = useSession();
   if (status === "authenticated") return <Navigate to="/dashboard/" replace />;
   return (
@@ -183,20 +269,20 @@ function Login() {
           </span>
           AzureKiln
         </div>
-        <h1>管理控制台</h1>
-        <p>集中管理上游账号、模型路由和服务运行状态。</p>
+        <h1>{t("app.brandSubtitle")}</h1>
+        <p>{t("login.description")}</p>
       </section>
       <section className={s.loginCard}>
         <Icon name="shield" />
-        <h2>{status === "forbidden" ? "无管理权限" : "登录 AzureKiln"}</h2>
-        <p>使用统一身份账号登录。仅管理员可以访问此控制台。</p>
+        <h2>{status === "forbidden" ? t("app.accessDenied") : t("login.azurekilnSignIn")}</h2>
+        <p>{t("login.accessHint")}</p>
         {status === "checking" ? (
-          <p role="status">正在验证登录状态…</p>
+          <p role="status">{t("app.verifying")}</p>
         ) : (
           <>
             <ErrorNotice message={error} />
             <a className={`${s.linkButton} ${s.primary}`} href={SSO_LOGIN_URL}>
-              {status === "forbidden" ? "使用其他账号登录" : "使用统一身份登录"}
+              {status === "forbidden" ? t("app.otherAccount") : t("login.ssoSignIn")}
               <Icon name="arrow" />
             </a>
             {(status === "error" || status === "forbidden") && (
@@ -205,7 +291,7 @@ function Login() {
                   void establishSession();
                 }}
               >
-                重新检查登录状态
+                {t("login.recheck")}
               </button>
             )}
           </>

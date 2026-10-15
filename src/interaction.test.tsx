@@ -143,7 +143,7 @@ describe("collapsible navigation", () => {
       data: path === "/models" ? { revision: 0, models: [] } : { credentials: [] },
     }));
     const first = mount();
-    fireEvent.click(screen.getByRole("button", { name: "收起侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
     expect(screen.getByRole("button", { name: "展开侧栏" }).getAttribute("aria-expanded")).toBe(
       "false",
     );
@@ -162,7 +162,7 @@ describe("collapsible navigation", () => {
       throw new Error("blocked");
     });
     mount();
-    fireEvent.click(screen.getByRole("button", { name: "收起侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
     expect(screen.getByRole("button", { name: "展开侧栏" })).toBeTruthy();
   });
 });

@@ -11,6 +11,7 @@ import {
   profileLabel,
 } from "../components";
 import s from "../ui.module.scss";
+import dashboard from "../dashboard.module.scss";
 function normalize(value: unknown): RecordValue & {
   summary: RecordValue;
   previous: RecordValue | null;
@@ -128,9 +129,10 @@ export function Dashboard() {
   const period = d?.range ?? {};
   const actualGrain = period.granularity === "hour" ? "hour" : "day";
   return (
-    <>
+    <div className={dashboard.page}>
       <PageTitle
         title={t("dash.runtime")}
+        description={t("dash.description")}
         actions={
           <>
             <select
@@ -174,7 +176,11 @@ export function Dashboard() {
             </div>
           )}
           <KpiCards summary={d.summary} previous={d.previous} series={d.series} />
-          <Panel title={t("dash.usageTrend")} hint={t("dash.usageTrendHint")} className={s.trend}>
+          <Panel
+            title={t("dash.usageTrend")}
+            hint={t("dash.usageTrendHint")}
+            className={`${s.trend} ${dashboard.trendPanel}`}
+          >
             {period.partial === true && (
               <p className={s.note} role="status">
                 {t("dash.storagePartial")}
@@ -188,8 +194,52 @@ export function Dashboard() {
               partial={period.partial === true}
             />
           </Panel>
-          <div className={s.dashboardGrid}>
-            <Panel title={t("dash.profileUsage")} hint={t("dash.granularityByRequests")}>
+          <div className={dashboard.detailsGrid}>
+            <Panel
+              title={t("dash.modelRank")}
+              hint={t("dash.granularityByRequests")}
+              className={dashboard.modelsPanel}
+            >
+              {d.models.length ? (
+                <div className={`${s.tableWrap} ${s.panelScroll}`}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>{t("dash.models")}</th>
+                        <th>{t("dash.requests")}</th>
+                        <th>Token</th>
+                        <th>Credit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...d.models]
+                        .sort((a, b) => (number(b.requests) ?? -1) - (number(a.requests) ?? -1))
+                        .slice(0, 10)
+                        .map((m, i) => (
+                          <tr key={i}>
+                            <td>
+                              <span className={`${s.rank} ${dashboard.rank}`}>
+                                {String(i + 1).padStart(2, "0")}
+                              </span>
+                              <strong>{text(m.model) || t("dash.unknownModel")}</strong>
+                            </td>
+                            <td>{metric(m.requests)}</td>
+                            <td>{metric(m.total_tokens)}</td>
+                            <td>{metric(m.credit)}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <Empty title={t("dash.modelRankEmpty")} />
+              )}
+            </Panel>
+            <Panel
+              title={t("dash.profileUsage")}
+              hint={t("dash.granularityByRequests")}
+              className={dashboard.profilesPanel}
+            >
               {d.profiles.length ? (
                 <div className={s.distribution}>
                   {d.profiles.map((p, i) => {
@@ -214,44 +264,10 @@ export function Dashboard() {
                 <Empty title={t("dash.profileUsageEmpty")} />
               )}
             </Panel>
-            <Panel title={t("dash.modelRank")}>
-              {d.models.length ? (
-                <div className={`${s.tableWrap} ${s.panelScroll}`}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>{t("dash.models")}</th>
-                        <th>{t("dash.requests")}</th>
-                        <th>Token</th>
-                        <th>Credit</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...d.models]
-                        .sort((a, b) => (number(b.requests) ?? -1) - (number(a.requests) ?? -1))
-                        .slice(0, 10)
-                        .map((m, i) => (
-                          <tr key={i}>
-                            <td>
-                              <span className={s.rank}>{String(i + 1).padStart(2, "0")}</span>
-                              <strong>{text(m.model) || t("dash.unknownModel")}</strong>
-                            </td>
-                            <td>{metric(m.requests)}</td>
-                            <td>{metric(m.total_tokens)}</td>
-                            <td>{metric(m.credit)}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <Empty title={t("dash.modelRankEmpty")} />
-              )}
-            </Panel>
-            <Panel title={t("dash.credentialHealth")}>
+            <Panel title={t("dash.credentialHealth")} className={dashboard.healthPanel}>
               <Health data={d.health} />
             </Panel>
-            <Panel title={t("dash.balanceTitle")}>
+            <Panel title={t("dash.balanceTitle")} className={dashboard.balancePanel}>
               <p className={s.note}>{t("dash.balanceNote")}</p>
               {d.official_credits !== undefined ? (
                 <OfficialCredits value={d.official_credits} />
@@ -260,7 +276,7 @@ export function Dashboard() {
               )}
             </Panel>
           </div>
-          <p className={s.updated}>
+          <p className={`${s.updated} ${dashboard.updated}`}>
             {t("dash.updatedAt")}{" "}
             {typeof d.generated_at === "number"
               ? new Date(d.generated_at * 1000).toLocaleString("zh-CN")
@@ -268,6 +284,6 @@ export function Dashboard() {
           </p>
         </>
       )}
-    </>
+    </div>
   );
 }

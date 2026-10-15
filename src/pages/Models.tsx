@@ -37,6 +37,8 @@ import {
   specRange,
 } from "../modelMetadata";
 import s from "../ui.module.scss";
+import m from "../management.module.scss";
+import { useT } from "../i18n";
 export const profiles = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
 const validId = (id: string) => /^[A-Za-z0-9_.:/@-]{1,160}$/.test(id) && ![".", ".."].includes(id);
 export function validateRule(rule: ModelRule, models: ModelRule[]): string | null {
@@ -493,6 +495,7 @@ function matchesCatalog(model: ModelRule, query: string, filter: CatalogFilter):
   return true;
 }
 export function Models() {
+  const t = useT();
   const resource = useResource("/models", modelResponse, { cache: true });
   const credentials = useResource("/credentials", credentialResponse, { cache: true });
   const [query, setQuery] = useState("");
@@ -536,8 +539,8 @@ export function Models() {
   return (
     <>
       <PageTitle
-        title="模型路由"
-        description="独立映射模型名称，并明确每条路由的账号或区域边界。"
+        title={t("nav.models")}
+        description={t("models.description")}
         actions={
           <>
             <button
@@ -573,6 +576,7 @@ export function Models() {
       )}
       <Panel
         title="模型目录"
+        className={m.dataPanel}
         hint={
           resource.data
             ? filtering && rows
@@ -581,14 +585,17 @@ export function Models() {
             : undefined
         }
       >
-        <div className={s.toolbar}>
-          <input
-            aria-label="搜索模型"
-            placeholder="搜索 ID、名称、描述、厂商，支持空格分隔多关键词…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          <div className={s.filterBar}>
+        <div className={m.catalogToolbar}>
+          <div className={m.searchField}>
+            <Icon name="search" />
+            <input
+              aria-label="搜索模型"
+              placeholder="搜索 ID、名称、描述、厂商，支持空格分隔多关键词…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <div className={m.toolbarLine}>
             <select
               aria-label="筛选区域"
               value={filter.region}
@@ -653,6 +660,8 @@ export function Models() {
                 重置
               </button>
             )}
+          </div>
+          <div className={m.guardOptions}>
             <label className={s.enableSwitch}>
               <input
                 type="checkbox"

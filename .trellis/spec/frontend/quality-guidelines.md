@@ -21,11 +21,25 @@ tests; there is no production mock fallback or API-key login form.
 ## Visual assertions
 
 Keep semantic tokens in src/theme.scss; components consume CSS variables.
-Desktop sidebar and workspace share --sidebar-width (208px open, 72px collapsed).
+The 2026-10-16 correction uses a full-width 48px header and a sidebar below it.
+Desktop sidebar and workspace share --sidebar-width (208px open, 44px collapsed).
+The workspace has an 8px inset and a 22px radius; controls/panels use 12px/16px.
 Do not animate sidebar width or workspace margin independently: earlier captures
 showed content covered by the sidebar. Geometry tests must assert positions and
-elementFromPoint visibility, not merely computed width. The visible title block
-is the hit target because Dashboard's semantic h1 is visually hidden.
+elementFromPoint visibility, not merely computed width. Every page has a visible
+h1, whose centre must remain unobstructed. Verify the first painted frame too.
+
+At <=800px, use the existing native dialog Drawer for navigation. The trigger
+is named 打开导航菜单 and the dialog 主导航. Escape and selecting a route close it;
+focus returns to the trigger. Do not replace it with cramped horizontal navigation.
+Record actual rendered platform fonts for Chinese text, not only font-family.
+
+Use selectors specific enough for navigation Drawer overrides: `.drawer.navigationDrawer`
+and `.modalOverlay[open]:has(.navigationDrawer)` must win over the later generic
+`.drawer` and `.modalOverlay[open]` rules. Verify width and alignment in the browser.
+The overview NavLink must set `aria-current="page"` for both `/dashboard` and
+`/dashboard/`, and clear it on other routes; test current-page state through the
+navigation landmark rather than the brand link.
 
 Check light/dark at 1440px and mobile at 375px. Assert document scroll width
 does not exceed the viewport; horizontal table scrolling stays in its wrapper.

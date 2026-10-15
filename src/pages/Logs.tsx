@@ -25,6 +25,7 @@ import {
 import { eventActionLabel, eventKindLabel } from "../values";
 import { profiles } from "./Models";
 import s from "../ui.module.scss";
+import m from "../management.module.scss";
 import { t, useT } from "../i18n";
 function normalize(value: unknown) {
   const data = object(value);
@@ -110,6 +111,7 @@ export function Logs() {
     <>
       <PageTitle
         title={t("logs.title")}
+        description={t("logs.description")}
         actions={
           <>
             <button onClick={resource.reload}>
@@ -144,6 +146,7 @@ export function Logs() {
         ))}
       </div>
       <Panel
+        className={m.dataPanel}
         title={
           kind === "request"
             ? t("logs.panel.request")
@@ -154,7 +157,7 @@ export function Logs() {
         hint={t("logs.perPage")}
       >
         <form
-          className={s.filters}
+          className={m.logFilters}
           onSubmit={(e) => {
             e.preventDefault();
             setFilters(draft);
@@ -210,17 +213,22 @@ export function Logs() {
             value={draft.search}
             onChange={(e) => setDraft({ ...draft, search: e.target.value })}
           />
-          <button type="submit">{t("logs.apply")}</button>
-          <button
-            type="button"
-            onClick={() => {
-              setFilters(emptyFilters);
-              setDraft(emptyFilters);
-              setCursors([]);
-            }}
-          >
-            {t("logs.reset")}
-          </button>
+          <div className={m.filterActions}>
+            <span className={m.filterHint}>{t("logs.filterHint")}</span>
+            <button type="submit" className={s.primary}>
+              {t("logs.apply")}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFilters(emptyFilters);
+                setDraft(emptyFilters);
+                setCursors([]);
+              }}
+            >
+              {t("logs.reset")}
+            </button>
+          </div>
         </form>
         <ResourceState {...resource} />
         {resource.data?.degraded && (

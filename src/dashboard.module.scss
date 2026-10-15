@@ -1,0 +1,284 @@
+.page {
+  min-width: 0;
+}
+
+.overview {
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--shadow) 35%, transparent);
+}
+
+.overviewHeading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 20px 16px;
+
+  h2 {
+    margin: 0;
+    color: var(--strong);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.5;
+  }
+
+  p {
+    margin: 3px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+}
+
+.sectionIcon {
+  display: grid;
+  flex: 0 0 36px;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--accent);
+  background: var(--soft);
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.primaryMetrics.primaryMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0 20px 20px;
+  border: 0;
+}
+
+.metricCard.metricCard {
+  position: relative;
+  min-width: 0;
+  border: 0;
+
+  &::after {
+    display: none;
+  }
+
+  .metricHeading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .metricIcon {
+    display: grid;
+    flex: 0 0 24px;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    color: var(--muted);
+
+    svg {
+      width: 16px;
+      height: 16px;
+    }
+  }
+
+  > strong {
+    margin: 6px 0 5px;
+    color: var(--strong);
+    font-size: 27px;
+    font-weight: 600;
+    letter-spacing: -0.7px;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;
+  }
+
+  > small {
+    min-height: 18px;
+    font-size: 11px;
+  }
+
+  > svg {
+    height: 24px;
+    margin-top: 12px;
+  }
+}
+
+.primaryMetric.primaryMetric {
+  padding: 14px 16px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--soft) 65%, var(--surface));
+}
+
+.tokenSection {
+  padding: 16px 20px 18px;
+  border-top: 1px solid var(--line);
+
+  > h3 {
+    margin: 0 0 12px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+  }
+}
+
+.tokenMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.tokenMetric.tokenMetric {
+  padding: 0 20px;
+  border-left: 1px solid var(--line);
+  background: transparent;
+
+  &:first-child {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  &:last-child {
+    padding-right: 0;
+  }
+
+  > strong {
+    font-size: 22px;
+  }
+
+  > svg {
+    height: 18px;
+    margin-top: 8px;
+    opacity: 0.75;
+  }
+}
+
+.trendPanel.trendPanel {
+  margin-bottom: 20px;
+  border-radius: 16px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--shadow) 35%, transparent);
+}
+
+.detailsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 20px;
+
+  > section {
+    min-width: 0;
+    border-radius: 16px;
+  }
+}
+
+.modelsPanel table {
+  white-space: nowrap;
+
+  td:first-child {
+    max-width: 290px;
+
+    strong {
+      display: inline-block;
+      max-width: 230px;
+      overflow: hidden;
+      vertical-align: middle;
+      text-overflow: ellipsis;
+    }
+  }
+}
+
+.rank.rank {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.profilesPanel,
+.healthPanel,
+.balancePanel {
+  min-width: 0;
+}
+
+.updated.updated {
+  margin: 18px 0 0;
+  text-align: right;
+  font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+  .primaryMetrics.primaryMetrics {
+    gap: 8px;
+  }
+
+  .primaryMetric.primaryMetric {
+    padding: 12px;
+  }
+
+  .metricCard.metricCard > strong {
+    font-size: 24px;
+  }
+
+  .tokenMetric.tokenMetric {
+    padding-inline: 12px;
+  }
+}
+
+@media (max-width: 720px) {
+  .overviewHeading {
+    padding: 16px;
+  }
+
+  .primaryMetrics.primaryMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 0 16px 16px;
+  }
+
+  .tokenSection {
+    padding: 14px 16px 16px;
+  }
+
+  .tokenMetrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 0;
+  }
+
+  .tokenMetric.tokenMetric {
+    padding-inline: 12px;
+
+    &:nth-child(odd) {
+      padding-left: 0;
+      border-left: 0;
+    }
+
+    &:nth-child(even) {
+      padding-right: 0;
+    }
+  }
+
+  .metricCard.metricCard > strong {
+    font-size: 23px;
+  }
+
+  .tokenMetric.tokenMetric > strong {
+    font-size: 21px;
+  }
+
+  .detailsGrid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+}

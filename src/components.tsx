@@ -17,6 +17,8 @@ export function Icon({ name = "grid" }: { name?: string }) {
     plus: "M12 5v14M5 12h14",
     collapse: "M4 4h16v16H4zM9 4v16m7-12-3 4 3 4",
     expand: "M4 4h16v16H4zM9 4v16m4-12 3 4-3 4",
+    menu: "M4 6h16M4 12h16M4 18h16",
+    search: "M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15Zm5.5 13 5 5",
     refresh: "M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15",
     close: "m6 6 12 12M6 18 18 6",
     shield: "m12 2 8 3v6c0 5-8 11-8 11S4 16 4 11V5l8-3Zm-4 9 3 3 5-6",
@@ -36,8 +38,8 @@ export function Icon({ name = "grid" }: { name?: string }) {
   };
   return (
     <svg
-      width="20"
-      height="20"
+      width="16"
+      height="16"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -59,11 +61,10 @@ export function PageTitle({
   description?: string;
   actions?: ReactNode;
 }) {
-  // The header breadcrumb already names the page; keep the h1 for screen readers only.
   return (
     <div className={s.pageTitle}>
       <div>
-        <h1 className={s.srOnly}>{title}</h1>
+        <h1>{title}</h1>
         {description && <p>{description}</p>}
       </div>
       <div className={s.actions}>{actions}</div>

@@ -11,7 +11,7 @@
   "creator": "lichengyu",
   "assignee": "lichengyu",
   "createdAt": "2026-10-15",
-  "completedAt": "2026-10-15",
+  "completedAt": "2026-10-16",
   "branch": "feat/azurekiln-admin-ui",
   "base_branch": "master",
   "worktree_path": null,
@@ -21,6 +21,9 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Implemented and committed. Final check clean; 176 unit/component tests and 34 browser tests passed; build passed. Reviewed 208px light/dark and 375px mobile screenshots. docs/validation.md records evidence and limits. Real production provider login and deployment remain operator acceptance.",
-  "meta": {}
+  "notes": "2026-10-16 visual correction accepted by coordinating root. Final check and 176 unit tests passed; build passed with notices. All 36 browser scenarios verified (35/36 full run plus 1/1 after fixture-only revision correction); root reviewed final light/dark/mobile screenshots and YaHei CDP evidence. Source frozen; explicit-path commit and journal belong to root. No push/deployment. docs/validation.md and correction.md record evidence, artifact paths and limits.",
+  "meta": {
+    "visualCorrection": "2026-10-16: user reopened task; New API Base UI/Tailwind 4 shell is primary reference; dashboard-first review; unified commit by coordinating root only",
+    "originalCompletedAt": "2026-10-15"
+  }
 }

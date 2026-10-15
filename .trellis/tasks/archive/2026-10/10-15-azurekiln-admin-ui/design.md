@@ -1,5 +1,10 @@
 # Design
 
+> 2026-10-16: [correction.md](./correction.md) supersedes the original visual
+> reference and file ownership. New API Base UI/Tailwind 4 is the primary
+> structural reference; implementation is independent. Dashboard screenshots
+> require coordinating root review before the unified commit.
+
 ## Boundary and evidence
 Original web source at fc95b046104ef74e9685066f8338ce01bf9d396b (MIT, copyright 2026 墨菊). Copy only web source/config/tests and license; no node_modules, output, backend or user data. Retain React 19, TS, Zustand, axios, vite-plus and business components. Extract design from the four user-designated study files.
 

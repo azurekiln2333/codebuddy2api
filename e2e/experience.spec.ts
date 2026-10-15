@@ -148,9 +148,7 @@ async function experienceAPI(page: Page) {
   return { calls, session };
 }
 
-test("glass workspace folds, creates a scoped model and keeps dialogs isolated", async ({
-  page,
-}) => {
+test("workspace folds, creates a scoped model and keeps dialogs isolated", async ({ page }) => {
   const { calls } = await experienceAPI(page);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -169,8 +167,8 @@ test("glass workspace folds, creates a scoped model and keeps dialogs isolated",
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(await page.evaluate(() => scrollY)).toBe(before);
   await expect(opener).toBeFocused();
-  await page.getByRole("button", { name: "收起侧栏" }).click();
-  await expect(page.locator("aside")).toHaveCSS("width", "72px");
+  await page.getByRole("button", { name: "折叠侧栏" }).click();
+  await expect(page.locator("aside")).toHaveCSS("width", "44px");
   await page.reload();
   await expect(page.getByRole("button", { name: "展开侧栏" })).toBeVisible();
   await page.getByRole("button", { name: "新增模型" }).click();
@@ -203,15 +201,15 @@ test("glass workspace folds, creates a scoped model and keeps dialogs isolated",
   expect(errors).toEqual([]);
 });
 
-test("daily range uses hourly points, with desktop and mobile glass layouts", async ({ page }) => {
+test("daily range uses hourly points, with desktop and mobile drawer layouts", async ({ page }) => {
   await experienceAPI(page);
   await page.goto("/dashboard/");
   await page.getByLabel("统计时间范围").selectOption("1");
   await expect(
     page.getByRole("img", { name: "按小时用量趋势" }).locator('[data-series="requests"] circle'),
   ).toHaveCount(24);
-  await page.getByRole("button", { name: "收起侧栏" }).click();
-  await expect(page.locator("aside")).toHaveCSS("width", "72px");
+  await page.getByRole("button", { name: "折叠侧栏" }).click();
+  await expect(page.locator("aside")).toHaveCSS("width", "44px");
   await page.screenshot({ path: "test-results/glass-overview-hourly.png" });
   await page.getByLabel("统计粒度").selectOption("day");
   await expect(
@@ -222,7 +220,11 @@ test("daily range uses hourly points, with desktop and mobile glass layouts", as
   await expect(page.getByRole("img", { name: "按小时用量趋势" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/glass-overview-mobile.png" });
-  await page.getByRole("link", { name: "模型路由", exact: true }).click();
+  await page.getByRole("button", { name: "打开导航菜单", exact: true }).click();
+  const navigationDrawer = page.getByRole("dialog", { name: "主导航", exact: true });
+  await expect(navigationDrawer).toBeVisible();
+  await navigationDrawer.getByRole("link", { name: "模型路由", exact: true }).click();
+  await expect(navigationDrawer).not.toBeVisible();
   await page.getByRole("button", { name: "新增模型" }).click();
   await page.getByRole("radio", { name: /指定账号/ }).check();
   const dialog = page.getByRole("dialog");
