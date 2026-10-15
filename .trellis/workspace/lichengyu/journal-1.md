@@ -27,3 +27,25 @@ Delivered standalone live-admin OIDC gateway and deployment docs without changin
 ### Status
 
 [OK] **Completed**
+
+
+## Session 2: Storage Not Found source and integration diagnosis
+<!-- trellis-session: v=2 fp=295e2339abde9e5c -->
+
+**Date**: 2026-10-16
+**Task**: Storage Not Found source and integration diagnosis
+**Branch**: `feat/oauth-gateway`
+
+### Summary
+
+Verified unchanged FastAPI storage GET/archive routes and current gateway forwarding; no runtime defect reproduced. Compiled-JS targeted tests 19/19, check/build passed. Added four focused cases, transparent upstream 404 coverage, and two secret-free deployment checks. Deployed cause remains pending comparison; UI/backend/runner untouched.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9b1128e` | test(storage): verify backend routes and document 404 diagnosis |
+
+### Status
+
+[OK] **Completed**
