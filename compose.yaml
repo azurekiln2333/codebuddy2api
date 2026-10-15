@@ -1,0 +1,121 @@
+# Gateway + private upstream + Nginx example.
+#
+# Topology:  Internet -> Nginx (TLS, public 443) -> gateway (8788) -> private
+#            FastAPI (8787). The upstream port is on an internal-only network
+#            and is never published to the host.
+#
+# Usage:
+#   cp .env.example .env    # fill secrets, set UI_STATIC_DIR build path
+#   UI_DIST=/path/to/codebuddy2api-ui/dist docker compose up -d --build
+#
+# Rollback / bypass procedure lives in docs/deployment.md.
+
+services:
+  upstream:
+    # Replace with the real image or build the read-only reference repo.
+    # Reference image CMD (codebuddy2api Dockerfile):
+    #   python3 converter.py --host 0.0.0.0 --port 8787 --skip-check
+    # NOTE: in the reference repo, CODEBUDDY2API_BIND / CODEBUDDY2API_PORT are
+    # *compose host-port* variables (${BIND}:${PORT}:8787), NOT containerside
+    # listener settings. The container listener comes from the command below,
+    # so we set it explicitly rather than relying on those names.
+    image: codebuddy2api:local
+    restart: unless-stopped
+    # Explicit stable name so the gateway's private-origin allowlist and the
+    # internal network resolve `codebuddy2api` deterministically.
+    hostname: codebuddy2api
+    command:
+      - python3
+      - converter.py
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8787"
+      - --skip-check
+    networks:
+      # Only the gateway reaches the admin/inference port over this network.
+      private:
+        aliases:
+          - codebuddy2api
+      # Separate non-internal network purely for outbound internet egress.
+      # The backend MUST reach the CodeBuddy API (and any other upstream
+      # provider) directly; `private` is internal-only and has no route out.
+      egress: {}
+    environment:
+      # Real container env names (verified against converter.py / Dockerfile).
+      # The server api_key the gateway bridge signs in with:
+      CODEBUDDY2API_KEY: "${UPSTREAM_API_KEY:?set UPSTREAM_API_KEY in .env}"
+      # Legal browser Origin(s) for admin login/CSRF.
+      CODEBUDDY2API_ADMIN_ORIGINS: "${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN in .env}"
+      # Credential/SQLite storage directory (image default is /data/auth).
+      CODEBUDDY_AUTH_DIR: /data/auth
+      # Fail closed: refuse to serve anonymously. The reference image sets
+      # CODEBUDDY2API_ALLOW_OPEN_NOAUTH=true so a 0.0.0.0 bind passes its
+      # startup guard; we explicitly disable it because CODEBUDDY2API_KEY is
+      # always set here, so an accidentally unset key must NOT open the
+      # backend to the private network unauthenticated.
+      CODEBUDDY2API_ALLOW_OPEN_NOAUTH: "false"
+      # Enable Origin/CSRF enforcement for cookie-authenticated admin requests.
+      CODEBUDDY2API_ADMIN_CSRF: "true"
+    volumes:
+      - upstream-auth:/data/auth
+    # No ports: mapping. The admin/inference listener stays private: it is
+    # reachable only from the gateway over `private`, never from the host.
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      upstream:
+        condition: service_started
+    environment:
+      PUBLIC_ORIGIN: "${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN in .env}"
+      HOST: "0.0.0.0"
+      PORT: "8788"
+      # The backend is reachable by its stable private alias only.
+      UPSTREAM_ORIGIN: "http://codebuddy2api:8787"
+      UPSTREAM_API_KEY: "${UPSTREAM_API_KEY:?set UPSTREAM_API_KEY in .env}"
+      OIDC_ISSUER: "${OIDC_ISSUER:?set OIDC_ISSUER in .env}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID in .env}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET in .env}"
+      OIDC_REFRESH: "${OIDC_REFRESH:-false}"
+      UI_STATIC_DIR: "/opt/ui/dist"
+      ALLOW_INSECURE_LOCALHOST: "false"
+    volumes:
+      # Mount the external UI build read-only.
+      - "${UI_DIST:-./ui-dist}:/opt/ui/dist:ro"
+    networks:
+      - private
+      - edge
+    # Not published: only Nginx reaches 8788 over the edge network.
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/gateway.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    networks:
+      - edge
+
+networks:
+  # Internal bridge to the private upstream; no host access and NO outbound
+  # internet. Only the gateway and the backend join this network.
+  private:
+    internal: true
+  # Edge network between Nginx and the gateway (also carries public ingress).
+  edge:
+  # Non-internal egress network so the backend can reach the CodeBuddy API.
+  # Nothing else should attach here; it exists purely for upstream internet
+  # access and must never publish a port.
+  egress:
+
+volumes:
+  upstream-auth:
