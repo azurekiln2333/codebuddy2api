@@ -9,7 +9,7 @@
 - [x] Run browser gateway-contract checks/screenshots desktop/light/dark/mobile; fixtures exist only in tests.
 - [x] Commit the complete verified batch (feat(ui)); explicit paths, no push.
 - [x] trellis-check review; capture spec/deployment/validation notes.
-- [ ] Archive/journal after coordinator acceptance.
+- [x] Archive completed task; record the final handoff journal.
 
 Gates: pnpm check; pnpm test; pnpm build; pnpm exec playwright test. Do not claim live OAuth validation without configured gateway/provider. Record environment blockers. Verified commits define rollback points; no destructive reset/source repository mutation.
 
