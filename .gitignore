@@ -10,6 +10,17 @@ test-results/
 .env
 .env.local
 .tmp-*
-.herdr-approve-codex.ps1
-.herdr-approve-codex.log
-.herdr-approve-codex.pid
+.herdr-approve-*
+*.zip
+
+# Local AI agent tooling (not shared)
+.agents/
+.claude/
+.codebuddy/
+.codex/
+.cursor/
+.dsh/
+.pi/
+.qoder/
+.trae/
+.zcode/
