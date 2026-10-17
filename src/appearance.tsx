@@ -110,7 +110,7 @@ export function Appearance() {
               ))}
             </fieldset>
             <p className={s.note}>
-              界面采用 AzureKiln 蓝色。显示模式跟随系统时，会自动响应系统的明暗切换。
+              界面采用 CodeBuddy2Api 蓝色。显示模式跟随系统时，会自动响应系统的明暗切换。
             </p>
             {!persisted && <p role="status">浏览器无法保存偏好，本次会话内仍然生效。</p>}
             <fieldset className={s.langChoices}>

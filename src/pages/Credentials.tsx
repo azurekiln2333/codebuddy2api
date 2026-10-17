@@ -775,6 +775,9 @@ export function Credentials() {
                     {ready} / {group.length} 就绪
                   </span>
                 </div>
+                <div className={s.channelBar} aria-hidden="true">
+                  <i style={{ width: `${group.length ? (ready / group.length) * 100 : 0}%` }} />
+                </div>
                 <strong title={hasNumeric ? metric(totalCredits) : undefined}>
                   {hasNumeric ? compact(totalCredits) : unlimited > 0 ? "无限" : `${group.length}`}
                 </strong>
@@ -783,9 +786,6 @@ export function Credentials() {
                     ? `${group.length} 个账号 · 剩余额度${unlimited ? ` (+${unlimited} 无限)` : ""}`
                     : `${group.length} 个账号 · ${hint}`}
                 </small>
-                <div className={s.channelBar} aria-hidden="true">
-                  <i style={{ width: `${group.length ? (ready / group.length) * 100 : 0}%` }} />
-                </div>
               </button>
             );
           })}

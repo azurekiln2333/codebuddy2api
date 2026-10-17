@@ -1,7 +1,7 @@
 .dataPanel {
   min-width: 0;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--panel-radius);
   background: var(--surface);
 
   th {
@@ -116,7 +116,7 @@
 
   > button {
     border: 1px solid var(--line);
-    border-radius: 16px;
+    border-radius: var(--panel-radius);
     background: var(--surface);
   }
 
@@ -160,7 +160,7 @@
     min-height: 38px;
     padding: 8px 12px;
     border: 1px solid transparent;
-    border-radius: 12px;
+    border-radius: var(--radius);
     background: transparent;
     color: var(--muted);
     text-align: left;
@@ -219,7 +219,7 @@
 .settingsPanel {
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: var(--panel-radius);
   background: var(--surface);
 }
 

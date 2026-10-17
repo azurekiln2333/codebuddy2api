@@ -61,10 +61,10 @@ test("appearance persists, follows the system, and animates modal exit", async (
   await open.click();
   const sheet = page.getByRole("dialog").locator("section");
   await expect(sheet).toHaveCSS("animation-name", /drawerIn/);
-  // The AzureKiln theme is fixed to blue: no palette picker is offered anymore.
+  // The CodeBuddy2Api theme is fixed to blue: no palette picker is offered anymore.
   await expect(page.locator("html")).toHaveAttribute("data-palette", "blue");
   await expect(page.getByLabel("浅色配色")).toHaveCount(0);
-  await expect(page.getByText("界面采用 AzureKiln 蓝色。", { exact: false })).toBeVisible();
+  await expect(page.getByText("界面采用 CodeBuddy2Api 蓝色。", { exact: false })).toBeVisible();
   await page.getByLabel("深色", { exact: true }).check();
   const dark = await page
     .locator("body")

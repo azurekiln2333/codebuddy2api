@@ -79,7 +79,7 @@ test("anonymous session shows the SSO gate without any API key entry", async ({ 
   const session = await mockSession(page, false);
   await page.goto("/dashboard/settings");
   await expect(page).toHaveURL(/\/dashboard\/login$/);
-  await expect(page.getByRole("heading", { name: /登录 AzureKiln/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /登录 CodeBuddy2Api/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /统一身份登录/ })).toBeVisible();
   // No browser-side secret form: the original administrative API key is gone.
   expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
@@ -98,7 +98,7 @@ test("denied session (403) and unauthenticated session (401) stay distinguishabl
   );
   await page.goto("/dashboard/");
   await expect(page).toHaveURL(/\/dashboard\/login$/);
-  await expect(page.getByRole("heading", { name: /登录 AzureKiln/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /登录 CodeBuddy2Api/ })).toBeVisible();
   expect(await page.getByRole("heading", { name: "无管理权限" }).count()).toBe(0);
 
   const denied = await mockSession(page);

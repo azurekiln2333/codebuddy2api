@@ -61,7 +61,7 @@ describe("concise user-facing copy", () => {
         <AppRoutes />
       </MemoryRouter>,
     );
-    expect(screen.getByRole("heading", { name: "登录 AzureKiln" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "登录 CodeBuddy2Api" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /登录/ }).getAttribute("href")).toBe(
       "/sso/login?return_to=/dashboard/",
     );

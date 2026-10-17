@@ -213,6 +213,6 @@ describe("dashboard-prefixed routing", () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText("/dashboard/login")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "登录 AzureKiln" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "登录 CodeBuddy2Api" })).toBeTruthy();
   });
 });

@@ -269,7 +269,7 @@ describe("SSO entry and access feedback", () => {
       "/sso/login?return_to=/dashboard/",
     );
     expect(container.querySelector("form, input")).toBeNull();
-    expect(container.textContent).toContain("AzureKiln");
+    expect(container.textContent).toContain("CodeBuddy2Api");
   });
 
   it("removes the protected page and explains revoked admin access", async () => {

@@ -181,7 +181,7 @@ function Shell() {
             <span className={s.brandIcon}>
               <BrandMark />
             </span>
-            <span className={s.brandText}>AzureKiln</span>
+            <span className={s.brandText}>{t("app.brandName")}</span>
           </NavLink>
           <span className={s.headerContext}>{t("app.brandSubtitle")}</span>
         </div>
@@ -205,24 +205,7 @@ function Shell() {
           </button>
         </div>
       </header>
-      {!mobile && (
-        <aside className={s.sidebar}>
-          <div className={s.sidebarWorkspace}>
-            <span className={s.workspaceSymbol}>
-              <Icon name="shield" />
-            </span>
-            <div className={s.workspaceLabel}>
-              <strong>{t("app.adminWorkspace")}</strong>
-              <small>{t("app.administrator")}</small>
-            </div>
-          </div>
-          {renderNavigation()}
-          <div className={s.sidebarFoot}>
-            <span className={s.statusDot} />
-            <span>{t("app.adminSession")}</span>
-          </div>
-        </aside>
-      )}
+      {!mobile && <aside className={s.sidebar}>{renderNavigation()}</aside>}
       {mobile && navigationOpen && (
         <Drawer
           title={t("app.primaryNav")}
@@ -248,7 +231,6 @@ function Shell() {
           <ErrorNotice message={error} />
           <Outlet />
         </main>
-        <footer className={s.footer}>AzureKiln · {t("app.brandSubtitle")}</footer>
       </div>
     </div>
   );
@@ -267,14 +249,14 @@ function Login() {
           <span className={s.brandIcon}>
             <BrandMark />
           </span>
-          AzureKiln
+          {t("app.brandName")}
         </div>
         <h1>{t("app.brandSubtitle")}</h1>
         <p>{t("login.description")}</p>
       </section>
       <section className={s.loginCard}>
         <Icon name="shield" />
-        <h2>{status === "forbidden" ? t("app.accessDenied") : t("login.azurekilnSignIn")}</h2>
+        <h2>{status === "forbidden" ? t("app.accessDenied") : t("login.codebuddy2apiSignIn")}</h2>
         <p>{t("login.accessHint")}</p>
         {status === "checking" ? (
           <p role="status">{t("app.verifying")}</p>

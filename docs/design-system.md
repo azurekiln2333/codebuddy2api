@@ -34,10 +34,11 @@
 
 | 角色 | 规则 |
 | --- | --- |
-| 常规控件 | --radius: 12px；--control-height: 32px |
-| 常规面板 | --panel-radius: 16px |
-| 外层内容面板 | --workspace-radius: 22px |
-| 导航项 / 顶栏图标按钮 | 10px 圆角；导航 36px 高，图标按钮 32px |
+| 常规控件 | --radius: 8px（对齐 New API 的 0.5rem 档）；--control-height: 32px |
+| 常规面板 | --panel-radius: var(--radius) |
+| 外层内容面板 | --workspace-radius: calc(var(--radius) * 1.4) |
+| 圆角阶梯 | --radius-sm 0.6x / --radius-md 0.8x / --radius-lg 1x / --radius-xl 1.4x |
+| 导航项 / 顶栏图标按钮 | var(--radius)；导航 36px 高，图标按钮 32px |
 | 图标 | 16px，品牌标记 24px |
 | 表头 / 数据行 | 40px / 60px；复杂内容可自然增高 |
 | 页面内距 | 桌面 20px 24px 28px；手机 16px 16px 24px，窄屏14px |
@@ -61,9 +62,9 @@ html、body、按钮、输入框、下拉、文本域均应用此字体栈，代
 
 顶栏在外壳最上方，x=0、宽为视口、固定48px高，含导航开关、AzureKiln 品牌与会话/外观操作。侧栏从顶栏下方48px开始，展开208px、折叠44px，共享 --sidebar-width。品牌不再放在全高侧栏。导航按工作台、资源管理、系统分组。
 
-内容面板与外壳各留8px，桌面左界为 sidebar-width + 8px，22px圆角、1px细边框、极轻阴影。面板内部依次是面包屑、可见标题与操作、业务内容；标题不能仅供读屏。不要对 sidebar width 与 workspace margin 分别动画，避免首帧遮挡。
+内容面板与外壳各留8px，桌面左界为 sidebar-width + 8px，var(--workspace-radius)（= radius × 1.4）圆角、1px细边框、极轻阴影。面板内部依次是面包屑、可见标题与操作、业务内容；标题不能仅供读屏。不要对 sidebar width 与 workspace margin 分别动画，避免首帧遮挡。
 
-≤800px 隐藏桌面侧栏，内容面板左右6px、顶部4px、圆角18px。导航开关名称为“打开导航菜单”，打开现有 Drawer 原生 dialog，名称“主导航”。使用原生模态行为、lockPage 滚动锁和触发按钮焦点恢复；Escape、关闭按钮、选择路由后关闭。手机不能把六个导航项挤成横向滚动条。≤440px 内距收至14px。手机主内容按钮、输入框及选择框至少40px；登录主操作44px；48px顶栏内仍为32px控件。
+≤800px 隐藏桌面侧栏，内容面板左右6px、顶部4px、圆角仍为 var(--workspace-radius)。导航开关名称为“打开导航菜单”，打开现有 Drawer 原生 dialog，名称“主导航”。使用原生模态行为、lockPage 滚动锁和触发按钮焦点恢复；Escape、关闭按钮、选择路由后关闭。手机不能把六个导航项挤成横向滚动条。≤440px 内距收至14px。手机主内容按钮、输入框及选择框至少40px；登录主操作44px；48px顶栏内仍为32px控件。
 
 桌面开关名称“折叠侧栏 / 展开侧栏”。折叠偏好仅存本机界面设置，不存登录信息。几何回归同时检查主区域避让、标题命中、全页无横向溢出。
 

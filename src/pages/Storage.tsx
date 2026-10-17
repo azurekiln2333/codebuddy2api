@@ -18,6 +18,32 @@ function normalize(value: unknown) {
   return object(value, "存储状态");
 }
 
+// The gateway only serves a fixed page whitelist (install_pages in
+// app/gateway_management.py); "storage" is missing from it, so this route falls
+// back to a 302 -> /dashboard and the SPA index is never handed out. Detect the
+// unusable-document cases here and show an actionable notice instead of a bare
+// "not found" or a raw contract error.
+const SPA_INDEX_MARKERS = ["<!doctype html", "<html", '<div id="root"'];
+export function storageFailureMessage(
+  error: unknown,
+  options: { documentUrl?: string; status?: number | null } = {},
+) {
+  const status = options.status ?? null;
+  const documentUrl = options.documentUrl ?? "";
+  const viaRedirect =
+    status === 302 ||
+    status === 301 ||
+    (documentUrl !== "" && !/\/admin\/storage\/?(?:[?#].*)?$/.test(documentUrl));
+  if (viaRedirect)
+    return "存储管理页暂时不可用：网关未把 /dashboard/storage 列入页面白名单，直接打开会重定向回概览。后端补齐前无法查看存储状态。";
+  if (status === 404)
+    return "存储管理页暂时不可用：网关没有提供存储读取接口（GET /admin/storage）。后端补齐前无法查看存储状态。";
+  const message = errorMessage(error);
+  if (SPA_INDEX_MARKERS.some((marker) => message.toLowerCase().includes(marker)))
+    return "存储管理页暂时不可用：接口返回了页面内容而不是存储状态，通常是网关页面白名单缺少 storage。";
+  return message;
+}
+
 function bytes(value: unknown): string {
   const n = number(value);
   if (n === null) return "—";
@@ -102,6 +128,7 @@ export function Storage() {
   const resource = useResource("/storage", normalize);
   const [clearing, setClearing] = useState(false);
   const d = resource.data;
+  const unavailable = resource.error ? storageFailureMessage(resource.error) : null;
   const reclaimable = number(d?.reclaimable_bytes);
   const archives = Array.isArray(d?.archives) ? d.archives : [];
   const stateLabel =
@@ -129,7 +156,15 @@ export function Storage() {
           </>
         }
       />
-      <ResourceState {...resource} />
+      <ResourceState {...resource} error={unavailable} />
+      {!d && unavailable && (
+        <Panel title={t("storage.title")} hint={t("storage.stateUnavailable")}>
+          <div className={s.panelBody}>
+            <p className={s.storageLead}>{unavailable}</p>
+            <small className={s.storageSubtle}>{t("storage.unavailableHint")}</small>
+          </div>
+        </Panel>
+      )}
       {d && (
         <>
           <div className={s.kpiGrid}>

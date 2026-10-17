@@ -107,6 +107,11 @@ async function dashboardAPI(page: Page) {
 }
 
 async function measure(page: Page): Promise<Rects> {
+  // The sidebar animates its width, so settle running transitions before
+  // sampling painted geometry.
+  await page
+    .evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))
+    .catch(() => undefined);
   return page.evaluate(() => {
     const round = (value: number) => Math.round(value * 100) / 100;
     const box = (node: Element) => {
@@ -262,6 +267,41 @@ test("desktop sidebar collapse preserves the header, visible content and usable 
   await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
   await expect(page.getByRole("button", { name: "折叠侧栏", exact: true })).toBeVisible();
   expectDesktop(await measure(page), "expanded desktop after navigation");
+});
+
+test("sidebar collapse animates width and fades copy without moving icons", async ({ page }) => {
+  await page.setViewportSize(DESKTOP);
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" });
+  await dashboardAPI(page);
+  await page.goto("/dashboard/");
+  const aside = page.locator("aside");
+  await expect(aside).toHaveCSS("transition-property", /width/);
+  const label = aside.locator("a[href='/dashboard/logs'] span");
+  const iconBox = async () => {
+    const box = await aside.locator("a[href='/dashboard/logs'] svg").boundingBox();
+    if (!box) throw new Error("missing navigation icon");
+    return box;
+  };
+  const expandedIconX = (await iconBox()).x;
+  await expect(label).toHaveCSS("opacity", "1");
+
+  await page.getByRole("button", { name: "折叠侧栏", exact: true }).click();
+  // The copy stays mounted and only fades, so the icon keeps its slot.
+  await expect(label).toHaveCSS("opacity", "0");
+  const collapsedIconX = (await iconBox()).x;
+  expect(Math.abs(collapsedIconX - expandedIconX)).toBeLessThanOrEqual(1);
+  await expect(aside).toHaveCSS("width", `${COLLAPSED_SIDEBAR}px`);
+});
+
+test("sidebar resizes without motion when reduced motion is requested", async ({ page }) => {
+  await page.setViewportSize(DESKTOP);
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+  await dashboardAPI(page);
+  await page.goto("/dashboard/");
+  const aside = page.locator("aside");
+  await expect(aside).toHaveCSS("transition-duration", "0s");
+  await page.getByRole("button", { name: "折叠侧栏", exact: true }).click();
+  await expect(aside).toHaveCSS("width", `${COLLAPSED_SIDEBAR}px`);
 });
 
 test("375px mobile content remains readable with no horizontal navigation strip or page overflow", async ({

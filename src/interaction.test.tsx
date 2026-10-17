@@ -165,4 +165,14 @@ describe("collapsible navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
     expect(screen.getByRole("button", { name: "展开侧栏" })).toBeTruthy();
   });
+  it("keeps navigation labels mounted so the collapse only animates them", () => {
+    vi.spyOn(api, "get").mockReturnValue(new Promise(() => {}));
+    mount();
+    const label = screen.getByRole("link", { name: "日志审计" }).querySelector("span");
+    expect(label?.textContent).toBe("日志审计");
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
+    // The text node survives in icon mode; CSS fades it out instead.
+    expect(label?.isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: "日志审计" })).toBeTruthy();
+  });
 });

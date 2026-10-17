@@ -32,9 +32,16 @@
     "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", -apple-system,
     BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --radius: 12px;
-  --panel-radius: 16px;
-  --workspace-radius: 22px;
+  /* Radius scale mirrors new-api/web --radius (1rem) with its derived steps:
+   * sm = 0.6x, md = 0.8x, lg = 1x, xl = 1.4x. Controls and panels both use
+   * the md/lg band so chrome stays compact. */
+  --radius: 8px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --panel-radius: var(--radius);
+  --workspace-radius: calc(var(--radius) * 1.4);
   --control-height: 32px;
   --card: var(--soft);
 }

@@ -2,7 +2,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { api, useResource } from "./api";
-import { Storage } from "./pages/Storage";
+import { Storage, storageFailureMessage } from "./pages/Storage";
 
 const storagePayload = {
   degraded: false,
@@ -38,6 +38,29 @@ describe("storage page", () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith("/storage/archive", { days: 7 }));
     expect(await screen.findByText(/已归档 6 条/)).toBeTruthy();
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  });
+  it("shows an actionable notice when the gateway page whitelist lacks storage", async () => {
+    vi.spyOn(api, "get").mockImplementation((path: string) =>
+      path === "/storage"
+        ? Promise.reject(
+            Object.assign(new Error("Request failed"), {
+              isAxiosError: true,
+              response: { status: 404, data: { detail: "Not Found" } },
+            }),
+          )
+        : Promise.resolve({ data: storagePayload }),
+    );
+    render(<Storage />);
+    expect(await screen.findByText(/页面暂不可用/)).toBeTruthy();
+  });
+
+  it("names the missing page whitelist instead of a bare not-found", () => {
+    expect(storageFailureMessage(null, { status: 302 })).toContain("页面白名单");
+    expect(storageFailureMessage(null, { status: 404 })).toContain("GET /admin/storage");
+    expect(storageFailureMessage(new Error('<!doctype html><div id="root">'))).toContain(
+      "页面白名单",
+    );
+    expect(storageFailureMessage(new Error("网络不可用"))).toBe("网络不可用");
   });
 });
 
