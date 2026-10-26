@@ -64,3 +64,26 @@ Completed the New API Base UI/Tailwind 4 inspired console redesign and generated
 ### Next Steps
 
 - Operator can upload the new ZIP contents to /data/apps/codebuddy2api-ui/dist. No push or production deployment was performed.
+
+
+## Session 3: Unified CodeBuddy2Api application and delivery
+<!-- trellis-session: v=2 fp=4b7c39b23e1a84c8 -->
+
+**Date**: 2026-10-26
+**Task**: Unified CodeBuddy2Api application and delivery
+**Branch**: `feat/azurekiln-admin-ui`
+
+### Summary
+
+Unified native OIDC, replacement panel-inspired UI, GitHub/CNB release packaging and images, pull-only Compose and scoped optional updates in sibling codebuddy2api. Four existing Pi agents completed bounded ownership. Frontend 179 unit + 44 browser + 2 native browser tests passed; focused backend gates and extracted release runtime passed. Full backend retained 13 reproduced upstream Windows failures. Docker engine, real provider and remote publication were unavailable or unexecuted. Product commit f518a8c lives in sibling repo; full evidence and local artifact checksum are in the archived unified-codebuddy2api task.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f518a8c` | feat: unify console SSO and automated image delivery |
+| `21696ed` | docs: record unified CodeBuddy2Api architecture and migration |
+
+### Status
+
+[OK] **Completed**
