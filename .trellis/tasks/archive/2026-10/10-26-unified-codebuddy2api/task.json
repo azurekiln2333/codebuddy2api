@@ -1,0 +1,29 @@
+{
+  "id": "unified-codebuddy2api",
+  "name": "unified-codebuddy2api",
+  "title": "Unify CodeBuddy2Api application and delivery",
+  "description": "Merge OAuth2 and replacement UI into codebuddy2api; port cnb2api-panel login/loading design; add GitHub and CNB releases, images and automatic Compose updates.",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "lichengyu",
+  "assignee": "lichengyu",
+  "createdAt": "2026-10-26",
+  "completedAt": "2026-10-26",
+  "branch": "feat/unified-codebuddy2api",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "f518a8c750c24f35a71ae67cf23233f51c2fd63a",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Product branch/commit live in sibling codebuddy2api; this repository holds coordination records. See implementation/acceptance.md. Local implementation complete; no remote publication or production deployment executed.",
+  "meta": {
+    "product_root": "D:/My2KProjects/codebuddy2api",
+    "acceptance": "implementation/acceptance.md"
+  }
+}
