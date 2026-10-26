@@ -12,6 +12,9 @@ This directory contains guidelines for backend development. Fill in each file wi
 
 ## Guidelines Index
 
+For unified product work, first read [Unified application and delivery](./unified-delivery.md).
+The maintained product is `codebuddy2api`; this repository holds coordination history.
+
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |

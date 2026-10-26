@@ -3,7 +3,9 @@
 ## 1. Scope / trigger
 
 Applies to src/api.ts, App guards and every /admin operation. Authentication
-migrated from an administrative API key to the same-origin OAuth gateway.
+migrated from an administrative API key to native same-origin FastAPI SSO
+in the maintained `codebuddy2api` product. The separate Node OAuth gateway is
+a migration reference and is not a production dependency.
 
 ## 2. Signatures
 
@@ -27,7 +29,7 @@ import credentials. Logout sends the same token explicitly.
 
 POST /admin/logs/clear sends scope and confirmation only. Scope all requires
 the exact confirmation documented in docs/gateway-contract.md; the browser never
-supplies api_key. The gateway owns provider callbacks and original backend
+supplies api_key. Native backend SSO owns provider callbacks and backend
 secrets. AZUREKILN_GATEWAY_URL is a dev/preview proxy hint, never a client secret.
 
 ## 4. Validation & error matrix

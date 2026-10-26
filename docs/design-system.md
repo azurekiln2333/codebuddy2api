@@ -1,5 +1,9 @@
 # AzureKiln 设计规范
 
+> 迁移说明（2026-10-26）：本文件记录独立 UI 的历史设计。当前产品已整合到
+> `../codebuddy2api/web/`，最新的 panel 风格、52px 顶栏和 180/64px 侧栏规范见
+> 同工作区 `codebuddy2api/docs/design-system.md`。下文不再作为新版产品的实现依据。
+
 本规范用于本控制台及后续 Tailwind 站点统一视觉。2026-10-16 用户纠偏后，以新版 New API（Base UI / Tailwind 4）的实际 shell、dashboard 和 UI 层为主要结构参考，独立实现 AzureKiln 品牌。旧样板只保留品牌蓝与克制的管理工具气质，旧 6px/10px 圆角、全高品牌侧栏和手机横向导航已被替代。
 
 事实来源：`src/theme.scss`（语义 token）、`src/ui.module.scss`（共享组件与 shell）、`src/dashboard.module.scss`（首页）、`src/management.module.scss`（表格与设置）。New API 源码仅供只读视觉研究，未复制其组件实现或品牌。本仓库原 web 来源与 MIT 版权见 `LICENSE.upstream`、`THIRD_PARTY_NOTICES.md`。

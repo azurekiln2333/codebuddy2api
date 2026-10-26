@@ -2,6 +2,8 @@
 
 ## Executable gates
 
+Run these in the maintained product's `codebuddy2api/web/` directory.
+
 - `pnpm check`: formatting, lint and type checks for src/e2e/scripts/config.
 - `pnpm test`: unit/component regressions using jsdom.
 - `pnpm build`: production assets under /dashboard/ plus complete license text.
@@ -21,9 +23,13 @@ tests; there is no production mock fallback or API-key login form.
 ## Visual assertions
 
 Keep semantic tokens in src/theme.scss; components consume CSS variables.
-The 2026-10-16 correction uses a full-width 48px header and a sidebar below it.
-Desktop sidebar and workspace share --sidebar-width (208px open, 44px collapsed).
-The workspace has an 8px inset and a 22px radius; controls/panels use 12px/16px.
+The 2026-10-26 panel redesign uses a full-width 52px header and a sidebar below it.
+Desktop sidebar and workspace share --sidebar-width (180px open, 64px collapsed).
+The workspace has an 8px inset and a 16px radius; the base radius is 12px.
+Brand blue is #3169df (dark #78a2ff). The connecting screen shows the brand,
+spinner and exact text 正在连接控制台 before the session request completes.
+Desktop login has two columns; mobile login uses one. Theme controls must be
+fully visible and hit-testable, including on a 375px viewport.
 Do not animate sidebar width or workspace margin independently: earlier captures
 showed content covered by the sidebar. Geometry tests must assert positions and
 elementFromPoint visibility, not merely computed width. Every page has a visible
@@ -43,11 +49,12 @@ navigation landmark rather than the brand link.
 
 Check light/dark at 1440px and mobile at 375px. Assert document scroll width
 does not exceed the viewport; horizontal table scrolling stays in its wrapper.
-Review the generated screenshots. See docs/design-system.md for transferable
+Review the generated screenshots. See the product's docs/design-system.md for
 tokens, spacing, components and Tailwind examples.
 
 ## Scope and attribution
 
 Retain MIT upstream attribution in LICENSE.upstream. scripts/prepare-notices.mjs
 copies the upstream license and complete runtime dependency licenses into dist/.
-Do not copy New API implementation, branding or unrelated user data.
+Use observable panel design specifications; preserve attribution and do not
+copy reference implementation code or unrelated user data.

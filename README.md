@@ -1,5 +1,10 @@
 # AzureKiln Administration UI
 
+> 2026-10-26：本 UI 已整合进同工作区的 `codebuddy2api/web/`，正式应用由
+> `codebuddy2api` 一个仓库提供后端、原生 OAuth2/OIDC 登录、控制台、镜像及发布。
+> 后续产品修改、构建和部署请在 `../codebuddy2api` 进行。此仓库保留迁移前源码和任务记录；
+> 下文的独立 SPA 开发说明仅用于历史参考。
+
 AzureKiln is a standalone, browser-based administration console for managing
 upstream accounts, model routing, and service state. It is a static React SPA
 that runs behind a **same-origin gateway** which owns the `/sso/*` session
