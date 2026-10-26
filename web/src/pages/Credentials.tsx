@@ -33,6 +33,8 @@ import {
 import { prepareImports, type ImportResult } from "../imports";
 import { downloadFilename } from "../downloads";
 import s from "../ui.module.scss";
+import m from "../management.module.scss";
+import { useT } from "../i18n";
 
 function expiry(value: unknown, milliseconds = false) {
   return typeof value === "number"
@@ -206,6 +208,7 @@ function MoreMenu({
 }
 
 export function Credentials() {
+  const t = useT();
   const resource = useResource("/credentials", credentialResponse);
   const [selected, setSelected] = useState<string[]>([]);
   const [drawer, setDrawer] = useState<"oauth" | "import" | "export" | null>(null);
@@ -694,7 +697,8 @@ export function Credentials() {
   return (
     <>
       <PageTitle
-        title="凭证管理"
+        title={t("nav.credentials")}
+        description={t("credentials.description")}
         actions={
           <>
             <button onClick={resource.reload}>
@@ -729,7 +733,11 @@ export function Credentials() {
       <ResourceState {...resource} />
       <ErrorNotice message={error} />
       {resource.data && (
-        <div className={s.channelGrid} role="group" aria-label="区域与账号类型筛选">
+        <div
+          className={`${s.channelGrid} ${m.channelSummary}`}
+          role="group"
+          aria-label="区域与账号类型筛选"
+        >
           {channelDefs.map(([key, label, hint]) => {
             const group = key === "all" ? allItems : allItems.filter((c) => channelOf(c) === key);
             const ready = group.filter(isReady).length;
@@ -767,6 +775,9 @@ export function Credentials() {
                     {ready} / {group.length} 就绪
                   </span>
                 </div>
+                <div className={s.channelBar} aria-hidden="true">
+                  <i style={{ width: `${group.length ? (ready / group.length) * 100 : 0}%` }} />
+                </div>
                 <strong title={hasNumeric ? metric(totalCredits) : undefined}>
                   {hasNumeric ? compact(totalCredits) : unlimited > 0 ? "无限" : `${group.length}`}
                 </strong>
@@ -775,9 +786,6 @@ export function Credentials() {
                     ? `${group.length} 个账号 · 剩余额度${unlimited ? ` (+${unlimited} 无限)` : ""}`
                     : `${group.length} 个账号 · ${hint}`}
                 </small>
-                <div className={s.channelBar} aria-hidden="true">
-                  <i style={{ width: `${group.length ? (ready / group.length) * 100 : 0}%` }} />
-                </div>
               </button>
             );
           })}
@@ -828,6 +836,7 @@ export function Credentials() {
       )}
       <Panel
         title="账号凭证"
+        className={m.dataPanel}
         hint={
           resource.data
             ? filtered.length === allItems.length
@@ -836,8 +845,8 @@ export function Credentials() {
             : "等待凭证列表"
         }
       >
-        <div className={s.credFilterBar}>
-          <div className={s.credFilterLeft}>
+        <div className={m.toolbar}>
+          <div className={m.toolbarMain}>
             <label className={s.check}>
               <input
                 aria-label="选择全部凭证"
@@ -847,16 +856,18 @@ export function Credentials() {
               />
               全选
             </label>
-            <input
-              className={s.credSearch}
-              aria-label="搜索凭证"
-              placeholder="搜索账号文件名、昵称或 UID…"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-              }}
-            />
+            <div className={m.searchField}>
+              <Icon name="search" />
+              <input
+                aria-label="搜索凭证"
+                placeholder="搜索账号文件名、昵称或 UID…"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
             <div className={s.statusPills} role="group" aria-label="状态筛选">
               {(
                 [

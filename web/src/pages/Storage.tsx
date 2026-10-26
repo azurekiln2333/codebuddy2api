@@ -18,6 +18,34 @@ function normalize(value: unknown) {
   return object(value, "存储状态");
 }
 
+// The console and the admin API share one origin behind the gateway, so a route
+// that is not wired up in this deployment surfaces as a redirect back to the
+// overview, a 404, or an HTML document instead of JSON. Turn those into an
+// actionable deployment notice instead of a bare "not found" or a raw contract
+// error. The wording stays about routing/deployment in general: it is not tied
+// to any single page or to a gateway page whitelist.
+const SPA_INDEX_MARKERS = ["<!doctype html", "<html", '<div id="root"'];
+export function routeFailureMessage(
+  error: unknown,
+  options: { documentUrl?: string; status?: number | null; apiPath?: string } = {},
+) {
+  const status = options.status ?? null;
+  const apiPath = options.apiPath ?? "/admin/storage";
+  const documentUrl = options.documentUrl ?? "";
+  const escaped = apiPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const servedByApi = new RegExp(`${escaped}/?(?:[?#].*)?$`);
+  const viaRedirect =
+    status === 302 || status === 301 || (documentUrl !== "" && !servedByApi.test(documentUrl));
+  if (viaRedirect)
+    return "页面暂时不可用：当前部署没有把该路由交给控制台，访问会被重定向回概览。请确认网关已放行该页面与对应接口。";
+  if (status === 404)
+    return `接口暂时不可用：当前部署没有提供 GET ${apiPath}。请确认后端已部署该接口，并且网关已放行。`;
+  const message = errorMessage(error);
+  if (SPA_INDEX_MARKERS.some((marker) => message.toLowerCase().includes(marker)))
+    return "接口暂时不可用：该地址返回的是页面内容而不是接口数据，通常是网关没有把这个接口转发给后端。";
+  return message;
+}
+
 function bytes(value: unknown): string {
   const n = number(value);
   if (n === null) return "—";
@@ -102,6 +130,7 @@ export function Storage() {
   const resource = useResource("/storage", normalize);
   const [clearing, setClearing] = useState(false);
   const d = resource.data;
+  const unavailable = resource.error ? routeFailureMessage(resource.error) : null;
   const reclaimable = number(d?.reclaimable_bytes);
   const archives = Array.isArray(d?.archives) ? d.archives : [];
   const stateLabel =
@@ -129,7 +158,15 @@ export function Storage() {
           </>
         }
       />
-      <ResourceState {...resource} />
+      <ResourceState {...resource} error={unavailable} />
+      {!d && unavailable && (
+        <Panel title={t("storage.title")} hint={t("storage.stateUnavailable")}>
+          <div className={s.panelBody}>
+            <p className={s.storageLead}>{unavailable}</p>
+            <small className={s.storageSubtle}>{t("storage.unavailableHint")}</small>
+          </div>
+        </Panel>
+      )}
       {d && (
         <>
           <div className={s.kpiGrid}>

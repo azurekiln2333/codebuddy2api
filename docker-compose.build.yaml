@@ -1,0 +1,26 @@
+# Local source build of the same application image.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yaml up -d --build
+#
+# Why a separate file: `build:` must stay out of the default file. With an
+# image-only default, `docker compose up -d` can never silently compile a stale
+# checkout, and `docker compose pull && up -d --no-build` stays the documented
+# upgrade path.
+#
+# Automatic updates of a locally built image are disabled on purpose: a rebuild is
+# the only way this image changes, so the updater must not replace it with a
+# registry tag. The label below removes this service from the updater's candidate
+# set even when the auto-update profile is requested. To receive automatic image
+# updates, use the default file with a published `CODEBUDDY2API_IMAGE`.
+
+services:
+  codebuddy2api:
+    image: ${CODEBUDDY2API_LOCAL_IMAGE:-codebuddy2api:local}
+    # Compose v2: build on `up` instead of resolving this tag from a registry.
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+      com.centurylinklabs.watchtower.scope: "${COMPOSE_PROJECT_NAME:-codebuddy2api}"

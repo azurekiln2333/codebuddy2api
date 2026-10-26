@@ -1,5 +1,7 @@
 # Only runtime files enter the build context; never send credentials or logs.
 **
+# Contract: every runtime COPY source is re-included with `!` below.
+# tests/test_deployment.py parses this file against the Dockerfile.
 !Dockerfile
 !.dockerignore
 !requirements.txt
@@ -7,10 +9,12 @@
 !converter.py
 !app/*.py
 !app/adapters/*.py
-!web/package.json
-!web/pnpm-lock.yaml
-!web/index.html
-!web/tsconfig.json
-!web/vite.config.ts
-!web/src/**
-!web/.gitignore
+# The console builds inside the image, so its whole source tree is needed: the
+# frontend stage runs check, unit tests and build against web/ before packaging.
+!web/**
+# Re-exclude what the frontend stage regenerates, so the context stays small.
+# Last matching pattern wins, so these must follow the `!web/**` allowlist above.
+web/node_modules
+web/dist
+web/test-results
+web/.tmp-*

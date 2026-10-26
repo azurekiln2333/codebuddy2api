@@ -1,74 +1,109 @@
+// CodeBuddy2Api console semantic tokens.
+// Geometry follows the reference administration console: 52px top bar,
+// 180px expanded / 64px collapsed sidebar, 12px control radius and the
+// #3169df brand blue. Only tokens live here; components read CSS variables.
 :root {
   color-scheme: light;
-  --hue: 108;
-  --accent: hsl(var(--hue) 38% 43%);
-  --strong: hsl(var(--hue) 32% 29%);
-  --text: hsl(var(--hue) 21% 19%);
-  --muted: hsl(var(--hue) 12% 40%);
-  --line: hsl(var(--hue) 19% 80%);
-  --page: hsl(var(--hue) 25% 93%);
-  --surface: hsl(var(--hue) 22% 99%);
-  --surface-tint: hsl(var(--hue) 30% 91%);
-  --soft: hsl(var(--hue) 24% 94%);
-  --selected: hsl(var(--hue) 34% 85% / 0.72);
-  --highlight: #ffffffbf;
-  --shadow: #18251a16;
-  --veil: #14281c55;
-  --primary: hsl(var(--hue) 34% 33%);
-  --primary-hover: hsl(var(--hue) 34% 28%);
+  --accent: #3169df;
+  --primary: #3169df;
+  --primary-hover: #2459ca;
+  --primary-soft: #edf3ff;
   --on-primary: #fff;
-  --error: #9b3c32;
-  --error-bg: #faeae6;
-  --warning: #79561d;
-  --warning-bg: #faf0d9;
-  --good: #315f40;
-  --good-bg: #e6f2e5;
-  --glow: hsl(var(--hue) 43% 78% / 0.72);
-  --glow-alt: hsl(calc(var(--hue) + 38) 35% 79% / 0.65);
-  --series-requests: #3f7fb8;
-  --series-tokens: #4e9e5f;
-  --series-credit: #cf8a2e;
-}
-:root[data-theme="light"][data-palette="blue"] {
-  --hue: 213;
-}
-:root[data-theme="light"][data-palette="rose"] {
-  --hue: 339;
-}
-:root[data-theme="light"][data-palette="amber"] {
-  --hue: 32;
+  --strong: #1b2430;
+  --text: #232b3a;
+  --secondary: #596477;
+  --muted: #7d8798;
+  --subtle: #8b95a4;
+  --line: #e9edf2;
+  --line-strong: #dce2eb;
+  --page: #f8f9fb;
+  --sidebar: #f2f4f7;
+  --surface: #fff;
+  --surface-subtle: #fafbfd;
+  --surface-tint: #f1f4f8;
+  --soft: #f6f8fa;
+  --selected: #e8eefc;
+  --nav-active-bg: #cfddf2;
+  --nav-active-border: #9fb5d6;
+  --nav-active-text: #000;
+  --primary-line: #c9d9f5;
+  /* Brand mark keeps the fixed product blue in both themes. */
+  --brand: #3169df;
+  --shadow: 0 2px 3px #1c315003, 0 1px 2px #1c315003;
+  --shadow-raised: 0 10px 30px #17243c1f;
+  --veil: #12203560;
+  --primary-shadow: 0 2px 3px #3169df16;
+  --brand-shadow: 0 3px 6px #3169df1c;
+  --error: #d35454;
+  --error-bg: #fff2f2;
+  --warning: #b88125;
+  --warning-bg: #fff8eb;
+  --good: #209d77;
+  --good-bg: #edf9f3;
+  --series-requests: #3169df;
+  --series-tokens: #209d77;
+  --series-credit: #b88125;
+  --font:
+    "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  /* Radius scale: 4 / 8 / 12 / 16 / 20 / 999 matching the reference console. */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-md: var(--radius);
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-full: 999px;
+  --panel-radius: var(--radius);
+  --workspace-radius: var(--radius-lg);
+  --control-height: 36px;
+  --header-height: 52px;
+  --sidebar-width: 180px;
+  --collapsed-sidebar-width: 64px;
+  --card: var(--soft);
 }
 
 @mixin dark {
   color-scheme: dark;
-  --hue: 151;
-  --accent: #79bd9f;
-  --strong: #9cd0b8;
-  --text: #e3eee8;
-  --muted: #abbcb3;
-  --line: #40534a;
-  --page: #111c18;
-  --surface: #21332b;
-  --surface-tint: #17271f;
-  --soft: #293d33;
-  --selected: #345846ad;
-  --highlight: #b0d5bf30;
-  --shadow: #00000042;
-  --veil: #030d099c;
-  --primary: #91c9af;
-  --primary-hover: #a8d8c0;
-  --on-primary: #152a20;
-  --error: #ffc1b7;
-  --error-bg: #462b28;
-  --warning: #f3d89a;
-  --warning-bg: #413724;
-  --good: #a6d7b1;
-  --good-bg: #263e2f;
-  --glow: #35634b55;
-  --glow-alt: #284e4955;
-  --series-requests: #7fb2e0;
-  --series-tokens: #8fd0a0;
-  --series-credit: #e3b96f;
+  --accent: #78a2ff;
+  --primary: #78a2ff;
+  --primary-hover: #97b7ff;
+  --primary-soft: #263653;
+  --on-primary: #0b1a33;
+  --strong: #e7edf6;
+  --text: #e1e7f0;
+  --secondary: #abb5c5;
+  --muted: #8590a1;
+  --subtle: #8d97a8;
+  --line: #2a313e;
+  --line-strong: #3b4455;
+  --page: #14181f;
+  --sidebar: #14181f;
+  --surface: #1b2029;
+  --surface-subtle: #1e242e;
+  --surface-tint: #232a36;
+  --soft: #20262f;
+  --selected: #263653;
+  --nav-active-bg: #24344f;
+  --nav-active-border: #3f5d8c;
+  --nav-active-text: #e7edf6;
+  --primary-line: #35507c;
+  --brand: #3169df;
+  --shadow: none;
+  --shadow-raised: 0 10px 30px #05080f66;
+  --veil: #05080fa6;
+  --primary-shadow: none;
+  --brand-shadow: 0 3px 6px #00000040;
+  --error: #f58b8b;
+  --error-bg: #3e2a2e;
+  --warning: #dbb16d;
+  --warning-bg: #3a3224;
+  --good: #68c5a4;
+  --good-bg: #233c34;
+  --series-requests: #78a2ff;
+  --series-tokens: #68c5a4;
+  --series-credit: #dbb16d;
 }
 :root[data-theme="dark"] {
   @include dark;

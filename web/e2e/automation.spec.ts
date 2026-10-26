@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { GATEWAY_CSRF, mockSession } from "./sso";
 
 test("per-account automation persists with scoped actions, dark mode and mobile containment", async ({
   page,
@@ -32,14 +33,13 @@ test("per-account automation persists with scoped actions, dark mode and mobile 
   const writes: string[] = [];
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  await mockSession(page);
   await page.route("**/admin/**", (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
-    if (path === "/admin/session")
-      return route.fulfill({ json: { authenticated: true, csrf_token: "fixture-only" } });
     if (path === "/admin/credentials") return route.fulfill({ json: { credentials } });
     if (["PATCH", "POST"].includes(req.method())) {
-      expect(req.headers()["x-csrf-token"]).toBe("fixture-only");
+      expect(req.headers()["x-csrf-token"]).toBe(GATEWAY_CSRF);
       writes.push(`${req.method()} ${path}`);
       if (req.method() === "PATCH") {
         const target = credentials.find((c) => path.endsWith(`/${c.id}`))!;

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { GATEWAY_CSRF, mockSession } from "./sso";
 
 async function experienceAPI(page: Page) {
   let revision = 1,
@@ -40,6 +41,7 @@ async function experienceAPI(page: Page) {
     credits: 0,
     credits_by_profile: { "cn-cli": 0, "intl-work": 0.5 },
   }));
+  const session = await mockSession(page);
   await page.route("**/admin/**", async (route) => {
     const request = route.request(),
       url = new URL(request.url()),
@@ -48,10 +50,8 @@ async function experienceAPI(page: Page) {
     const body = request.postData() ? (request.postDataJSON() as Record<string, unknown>) : null;
     calls.push({ method, path: path + url.search, body });
     const send = (json: unknown, status = 200) => route.fulfill({ json, status });
-    if (path === "/admin/session")
-      return send({ authenticated: true, csrf_token: "isolated-csrf" });
     if (method !== "GET" || path.endsWith("/poll"))
-      expect(request.headers()["x-csrf-token"]).toBe("isolated-csrf");
+      expect(request.headers()["x-csrf-token"]).toBe(GATEWAY_CSRF);
     if (path === "/admin/credentials")
       return send({
         credentials: enrolled
@@ -145,13 +145,11 @@ async function experienceAPI(page: Page) {
     }
     return send({ error: { message: `Unmocked ${method} ${path}` } }, 404);
   });
-  return calls;
+  return { calls, session };
 }
 
-test("glass workspace folds, creates a scoped model and keeps dialogs isolated", async ({
-  page,
-}) => {
-  const calls = await experienceAPI(page);
+test("workspace folds, creates a scoped model and keeps dialogs isolated", async ({ page }) => {
+  const { calls } = await experienceAPI(page);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/dashboard/models");
@@ -169,8 +167,8 @@ test("glass workspace folds, creates a scoped model and keeps dialogs isolated",
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(await page.evaluate(() => scrollY)).toBe(before);
   await expect(opener).toBeFocused();
-  await page.getByRole("button", { name: "收起侧栏" }).click();
-  await expect(page.locator("aside")).toHaveCSS("width", "76px");
+  await page.getByRole("button", { name: "折叠侧栏" }).click();
+  await expect(page.locator("aside")).toHaveCSS("width", "64px");
   await page.reload();
   await expect(page.getByRole("button", { name: "展开侧栏" })).toBeVisible();
   await page.getByRole("button", { name: "新增模型" }).click();
@@ -203,15 +201,15 @@ test("glass workspace folds, creates a scoped model and keeps dialogs isolated",
   expect(errors).toEqual([]);
 });
 
-test("daily range uses hourly points, with desktop and mobile glass layouts", async ({ page }) => {
+test("daily range uses hourly points, with desktop and mobile drawer layouts", async ({ page }) => {
   await experienceAPI(page);
-  await page.goto("/dashboard");
+  await page.goto("/dashboard/");
   await page.getByLabel("统计时间范围").selectOption("1");
   await expect(
     page.getByRole("img", { name: "按小时用量趋势" }).locator('[data-series="requests"] circle'),
   ).toHaveCount(24);
-  await page.getByRole("button", { name: "收起侧栏" }).click();
-  await expect(page.locator("aside")).toHaveCSS("width", "76px");
+  await page.getByRole("button", { name: "折叠侧栏" }).click();
+  await expect(page.locator("aside")).toHaveCSS("width", "64px");
   await page.screenshot({ path: "test-results/glass-overview-hourly.png" });
   await page.getByLabel("统计粒度").selectOption("day");
   await expect(
@@ -222,7 +220,11 @@ test("daily range uses hourly points, with desktop and mobile glass layouts", as
   await expect(page.getByRole("img", { name: "按小时用量趋势" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/glass-overview-mobile.png" });
-  await page.getByRole("link", { name: "模型路由", exact: true }).click();
+  await page.getByRole("button", { name: "打开导航菜单", exact: true }).click();
+  const navigationDrawer = page.getByRole("dialog", { name: "主导航", exact: true });
+  await expect(navigationDrawer).toBeVisible();
+  await navigationDrawer.getByRole("link", { name: "模型路由", exact: true }).click();
+  await expect(navigationDrawer).not.toBeVisible();
   await page.getByRole("button", { name: "新增模型" }).click();
   await page.getByRole("radio", { name: /指定账号/ }).check();
   const dialog = page.getByRole("dialog");
@@ -238,7 +240,7 @@ test("OAuth enrollment closes the drawer and refreshes without exposing the open
   page,
   context,
 }) => {
-  const calls = await experienceAPI(page);
+  const { calls } = await experienceAPI(page);
   await context.route("https://www.codebuddy.cn/**", (route) =>
     route.fulfill({ contentType: "text/html", body: "<h1>Isolated authorization fixture</h1>" }),
   );

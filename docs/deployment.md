@@ -4,13 +4,17 @@
 
 Prefer the [WebUI](webui.md) for everyday account, model and log management. Run the commands below from the repository root.
 
+Docker deployment needs **Docker Compose v2** (`docker compose`). The obsolete `version:` key is gone and the optional update service uses profiles, so Compose v1 / `docker-compose` is not supported.
+
 ## Configuration and data
 
 On first setup, run `cp .env.example .env` and set `CODEBUDDY2API_KEY` to your own random key. Keep an existing `.env` and add only the settings you need.
 
 | Setting | Purpose |
 |---------|---------|
-| `CODEBUDDY2API_IMAGE` | Compose image; the template uses `codebuddy2api:local` |
+| `CODEBUDDY2API_IMAGE` | Compose image to pull; the template points at this fork, never the upstream author's repository |
+| `CODEBUDDY2API_SSO_ENABLED` / `PUBLIC_ORIGIN` / `OIDC_*` / `ALLOW_INSECURE_LOCALHOST` | Console login; see [Console login](#console-login-oidc) |
+| `WATCHTOWER_POLL_INTERVAL` | Seconds between automatic image checks; default `600` |
 | `CODEBUDDY2API_BIND` / `CODEBUDDY2API_PORT` | Native listener and Compose host mapping; default `127.0.0.1:8787` |
 | `CODEBUDDY2API_AUTH_PATH` | Compose host data directory; defaults to `./auth`, mounted at `/data/auth` |
 | `CODEBUDDY2API_TRUSTED_PROXIES` | Trusted proxy IPs/CIDRs (comma separated); when the direct peer matches, the audit log records the client from `X-Forwarded-For`/`X-Real-IP` instead of the proxy address |
@@ -22,39 +26,147 @@ Compose reads declared variables from `.env`; shell variables take precedence. T
 
 Mount the entire data directory on writable local storage, not just one SQLite file, and do not share it between instances. Stop the gateway and back up the whole directory before upgrading; see [data and backups](webui.md#data-and-backups).
 
+## Console login (OIDC)
+
+Compose runs in console-login mode (`CODEBUDDY2API_SSO_ENABLED=true`). Fill in every value below before the first `docker compose up`; startup fails closed when they are missing, and there is no API-key fallback for console login while this mode is enabled.
+
+| Setting | Purpose |
+|---------|---------|
+| `PUBLIC_ORIGIN` | Public HTTPS origin browsers use, no trailing slash. Also the Origin allowlist and the redirect base. |
+| `OIDC_ISSUER` | Issuer exposing HTTPS discovery and JWKS. |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Confidential client credentials; the browser never receives the secret. |
+| `OIDC_REFRESH` | `true` requests `offline_access` and rotating refresh tokens. |
+| `ALLOW_INSECURE_LOCALHOST` | Loopback development escape hatch for plain-HTTP origins. Keep `false` in production. |
+| `SESSION_TTL_MS` / `SESSION_IDLE_MS` / `TRANSACTION_TTL_MS` / `MAX_SESSIONS` / `OAUTH_TIMEOUT_MS` | Optional tuning (empty keeps the default). Config fails closed when `SESSION_IDLE_MS` exceeds `SESSION_TTL_MS`. |
+
+Register the redirect URI `<PUBLIC_ORIGIN>/sso/callback` and grant `openid profile roles`. `roles` is required: administrator authorization reads live user info and needs both the admin role and its admin flag. `CODEBUDDY2API_KEY` stays the inference and automation credential, and the console never uses it. Set `CODEBUDDY2API_SSO_ENABLED=false` only for legacy local API operation without a console login.
+
 ## Docker Compose
 
 ### Use published images
 
-Set `CODEBUDDY2API_IMAGE` in `.env` to `ghcr.io/maiphucgiang/codebuddy2api:<version>`, choosing an existing release, then run:
+Set `CODEBUDDY2API_IMAGE` in `.env` to your fork's published image. The template default points at the fork's GHCR path; replace the owner with your own when you deploy elsewhere. Both registries publish the same release tags:
+
+```dotenv
+# GitHub fork
+CODEBUDDY2API_IMAGE=ghcr.io/<github-owner>/codebuddy2api:latest
+# CNB fork (the repository slug already ends with the repository name)
+CODEBUDDY2API_IMAGE=docker.cnb.cool/<cnb-repo-slug>:latest
+```
+
+Then pull and start without building anything on the host:
 
 ```bash
 docker compose pull
 docker compose up -d --no-build
 ```
 
-Images support `linux/amd64` and `linux/arm64`. Version tags pin releases, `latest` follows stable releases and `edge` follows main. Features depend on the selected version; older images may not include the current source's WebUI.
+The workflows target `linux/amd64` and `linux/arm64`. `latest` follows stable releases only; `X.Y.Z` selects a stable release and `vX.Y.Z-<pre>` selects a prerelease. GitHub also publishes `edge` from main; CNB main runs validation and packaging, with image publication on version tags. Features depend on the selected version. Publish the fork's first image before using these pull commands; the local build override is available beforehand.
+
+The image ships a liveness health check on `/health`. Confirm it with `docker compose ps` (status should become `healthy`) or `docker inspect --format '{{.State.Health.Status}}' codebuddy2api`.
+
+### Registry authentication
+
+A public GHCR package pulls anonymously. For a private package or registry, log in once on the host before `docker compose pull`:
+
+```bash
+# GHCR, classic PAT with read:packages
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+
+# CNB, CNB_TOKEN from the repository or platform settings
+echo "$CNB_TOKEN" | docker login docker.cnb.cool -u cnb --password-stdin
+```
+
+Keep credentials out of `.env` and the Compose files; they belong in the host's Docker credential store.
+
+That host login does **not** reach the update service. `docker login` writes `~/.docker/config.json` on the host, while the updater runs in its own container with its own filesystem, so the default Compose file mounts no credentials at all. When the registry needs authentication and you also want automatic updates, add a local override. Save it as `docker-compose.registry.yaml` next to `docker-compose.yml` (never commit it) and start with both files:
+
+```yaml
+services:
+  watchtower:
+    volumes:
+      # The updater reads /config.json unless DOCKER_CONFIG points elsewhere.
+      - ${HOME}/.docker/config.json:/config.json:ro
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.registry.yaml --profile auto-update up -d
+```
+
+Add the override only while that file exists: Docker creates a directory for a missing bind-mount source and the updater then cannot read it. `${HOME}` is not expanded on Windows — use the absolute path there, or set `DOCKER_CONFIG` to a directory that holds the file.
+
+If the host `config.json` relies on a credential helper (`credsStore` / `credHelpers`), the helper binary has to exist inside the updater container, because the image ships none. Either mount the helper and adjust `HOME`/`PATH`, or give the updater a dedicated minimal `config.json` that contains only this registry's credentials and mount that instead:
+
+```json
+{ "auths": { "ghcr.io": { "auth": "<base64 user:token>" } } }
+```
+
+Keep that file outside the repository. Without the override, the update service simply cannot pull a private image; the application container itself still starts fine from a manually pulled image.
 
 ### Build current source
 
+A separate override keeps `build:` out of the default file, so a pull-only deployment can never silently compile a local checkout:
+
 ```bash
-docker compose build
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.build.yaml up -d --build
 ```
 
-The build includes the WebUI; Node.js and Python are not required on the host. Open `http://127.0.0.1:8787/dashboard` to add accounts.
+The build includes the console; Node.js and Python are not required on the host. Open `http://127.0.0.1:8787/dashboard` and sign in through the identity provider. Locally built images are labelled out of the update service, because a rebuild is the only way that image changes.
+
+### Automatic image updates
+
+The update service is off by default and only starts when its profile is requested:
+
+```bash
+docker compose --profile auto-update up -d
+```
+
+It polls the registry every `WATCHTOWER_POLL_INTERVAL` seconds (default `600`), and only touches containers carrying the update label for this Compose project. The updater never updates itself, and another deployment directory or `-p` project name has a different scope, so two stacks on one host never select each other's containers.
+
+It restarts a container only when the image digest changes. A passing health check afterwards means the application is up, not that accounts or models work: there is no automatic application rollback.
+
+Disable automatic updates by leaving the profile off, or by stopping a running updater:
+
+```bash
+docker compose --profile auto-update stop watchtower
+docker compose --profile auto-update rm -f watchtower
+```
+
+A pinned release tag (`:X.Y.Z`) narrows the blast radius but does not freeze the image: tags are mutable, so re-publishing a release replaces the digest behind the same tag and the updater deploys the new digest. For an immutable pin, reference the digest instead — copy it from `docker inspect --format '{{index .RepoDigests 0}}' codebuddy2api` or from the release notes and set `CODEBUDDY2API_IMAGE=<registry>/codebuddy2api@sha256:<digest>`. A digest reference never changes, so the updater's checks stay no-ops for it, and that is the intended way to freeze one deployment while the project stays on `latest` elsewhere.
 
 ### Upgrades and recreates
 
-After editing `.env`, repeat the appropriate `docker compose up -d` command to recreate containers whose configuration changed. Rebuild after updating local source; select and pull the new version when using published images. `docker compose restart` alone does not apply changed environment values. Preserve the data directory to retain login state.
+After editing `.env`, repeat `docker compose up -d` to recreate containers whose configuration changed. `docker compose restart` alone does not apply changed environment values. The data directory keeps accounts, credentials and databases across a recreate; console login sessions live in memory only, so everyone signs in again after a recreate, restart or automatic update.
+
+For a published image, the manual upgrade is always:
+
+```bash
+docker compose pull
+docker compose up -d --no-build
+```
+
+### Rollback
+
+Pin the previous release and recreate from it:
+
+```bash
+# 1. Stop the application before touching its data.
+docker compose down
+# 2. Set the last known-good release, then start it.
+#    CODEBUDDY2API_IMAGE=<registry>/codebuddy2api:X.Y.Z   (edit .env)
+docker compose pull
+docker compose up -d --no-build
+```
+
+The control database migrates forward only: an older image cannot read a database written by a newer one. When the downgrade crosses a schema change, stop the application, restore the matching pre-upgrade copy of the whole `auth/` directory, and only then start the older image. Never roll the database back underneath a running instance, and never restore an outdated backup over claims, dispatches or revocations made after it. If the update profile is running, pin the target first — a digest reference cannot move, while a re-published version tag can — otherwise the updater pulls the newer image again.
 
 ## Reverse proxy and HTTPS
 
-The default loopback mapping is the only safe exposure without extra work. When you put the gateway behind a reverse proxy on a domain:
+The default loopback mapping is the only safe exposure without extra work. When you put the application behind a reverse proxy on a domain, [`nginx.example.conf`](nginx.example.conf) is a ready example: TLS termination, streaming without buffering or compression, and an access-log format that never records the `/sso/callback` query string.
 
-- Terminate TLS at the proxy and forward the original Host and scheme (`proxy_set_header Host $host` and `X-Forwarded-Proto $scheme` in nginx).
-- The WebUI compares the browser's `Origin` with the address the gateway actually sees. If the proxy rewrites the forwarded Host/scheme — for example HTTPS on the domain while the container sees HTTP — sign-in fails the Origin check. Trust your public address in **Settings → Extra trusted management origins（管理页额外信任来源）** or with `CODEBUDDY2API_ADMIN_ORIGINS` / `--admin-allowed-origins` instead of disabling CSRF protection; see [Management Origin checks](advanced.md#management-origin--csrf-switch).
-- Keep authentication enabled (`CODEBUDDY2API_KEY`) for any non-loopback exposure.
+- Terminate TLS at the proxy and forward the original Host and scheme (`proxy_set_header Host $http_host` and `X-Forwarded-Proto $scheme` in nginx).
+- `PUBLIC_ORIGIN` must equal the origin browsers actually use, and the proxy must forward the original Host and scheme unchanged (`proxy_set_header Host $http_host` and `X-Forwarded-Proto $scheme` in nginx). If the proxy rewrites them — HTTPS on the domain while the container sees HTTP — console login fails the Origin check. Correct the forwarded headers instead of relaxing the check: with console login enabled, `PUBLIC_ORIGIN` is the only accepted management origin, and the extra-origins setting does not apply.
+- Keep the inference credential (`CODEBUDDY2API_KEY`) set for any non-loopback exposure; console login does not replace it for `/v1/*`.
 
 ## Local Python setup
 
@@ -67,6 +179,8 @@ uv run converter.py
 ```
 
 Local startup does not require `.env`. Without an explicit key, the first loopback startup generates a `cb-…` default key in `auth/control.sqlite3` and displays it once in the interactive terminal after listening succeeds. Restarts reuse it without printing it again. Keep it safe: management and API requests share this key. Configure a key explicitly for first-time headless or non-loopback deployment.
+
+That zero-configuration mode is API-compatible only. The replacement console has no key login, so `/dashboard` cannot be used until console login (SSO) is configured, even on loopback. To open the console locally, export `CODEBUDDY2API_SSO_ENABLED=true`, `PUBLIC_ORIGIN=http://127.0.0.1:8787`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` and `ALLOW_INSECURE_LOCALHOST=true`, and register `http://127.0.0.1:8787/sso/callback` on the identity provider. `ALLOW_INSECURE_LOCALHOST` only relaxes plain HTTP for loopback origins; keep it `false` everywhere else.
 
 One-time disclosure goes directly to the controlling terminal (`/dev/tty` or Windows `CONOUT$`), not stdout/stderr; redirecting standard output does not capture the key. Terminal recording remains outside the gateway's control.
 
@@ -121,17 +235,17 @@ With the default local mode and no `CODEBUDDY_AUTH_DIR`, startup imports missing
 
 ## Without Compose
 
-After preparing `.env`, build and run a local source image:
+Run a published image without Compose:
 
 ```bash
-docker build -t codebuddy2api:local .
-docker run -d --name codebuddy2api -p 127.0.0.1:8787:8787 \
-  --env-file .env -v "$PWD/auth:/data/auth" \
-  -e CODEBUDDY_AUTH_DIR=/data/auth codebuddy2api:local
+docker run -d --name codebuddy2api --init --restart unless-stopped \
+  -p 127.0.0.1:8787:8787 --env-file .env \
+  -v "$PWD/auth:/data/auth" \
+  -e CODEBUDDY_AUTH_DIR=/data/auth <registry>/codebuddy2api:latest
 ```
 
-This command explicitly uses the default port and directory, not Compose-specific port mappings. Add accounts in the WebUI or run `docker exec -it codebuddy2api python3 converter.py login --no-browser`.
+Build the local image first with `docker build -t codebuddy2api:local .` when you want to run a checkout instead. This uses the default port and directory explicitly, not Compose port mappings. Add accounts in the console or run `docker exec -it codebuddy2api python3 converter.py login --no-browser`.
 
 ## Verification
 
-`curl http://127.0.0.1:8787/health` should return `{"status":"ok"}`. It checks liveness only, not account or model availability; inspect those in the WebUI. See [client configuration](clients.md) for API access and the [advanced reference](advanced.md) for errors and retry boundaries.
+`curl http://127.0.0.1:8787/health` should return `{"status":"ok"}`. It is the same check the image health check runs: liveness only, not account or model availability; inspect those in the console. Compose reports it as the container health status, so `docker compose ps` shows whether a pull or restart produced a running application. See [client configuration](clients.md) for API access and the [advanced reference](advanced.md) for errors and retry boundaries.

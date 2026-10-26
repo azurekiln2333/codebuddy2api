@@ -1,0 +1,162 @@
+# Cloud Native Build (CNB) pipeline.
+#
+# Every event runs the same repository-owned gates
+# (check_version -> backend tests -> web check/test/build -> browser tests ->
+# package + self-verify). A tag push reuses those exact stages, publishes the
+# image, and only *then* creates the Release and uploads the archive -- there is
+# no separate image pipeline that could bypass validation, and no Release is
+# left behind when the image fails.
+#
+# Version / tag / package contracts live in `scripts/` so GitHub Actions and
+# CNB cannot drift: `check_version.py`, `run_backend_tests.py`, `package.py`
+# and `release_tags.py`.
+#
+# Image registry defaults to `${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}`.
+# Override with `RELEASE_IMAGE`/`CNB_IMAGE` (and `CNB_REGISTRY`,
+# `CNB_REGISTRY_USER`, `CNB_REGISTRY_PASSWORD`) in repository settings.
+# Pull requests never log in to a registry and never publish.
+#
+# Multi-architecture: `CNB_PLATFORMS` defaults to `linux/amd64,linux/arm64`
+# (arm64 needs binfmt; the stage attempts `tonistiigi/binfmt` first). Set
+# `CNB_PLATFORMS=linux/amd64` if the runner cannot emulate arm64.
+
+# `main` pushes, `api_trigger` and `pull_request` only validate and package.
+# Publication (Release, version tags and `latest`) happens exclusively on the
+# tag pipeline below; the floating main-branch image tag is published by the
+# GitHub Actions workflow, not here.
+main:
+  push: &verify-build
+    - name: validate-and-package
+      docker:
+        image: cnbcool/default-dev-env:latest
+      env:
+        GOMAXPROCS: "2"
+        GOMEMLIMIT: 512MiB
+        RAYON_NUM_THREADS: "2"
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      stages:
+        - &stage-check-version
+          name: check-version
+          script: |
+            set -euo pipefail
+            python3 --version
+            python3 scripts/check_version.py --check-pyproject --check-compose
+        - &stage-install-web-tooling
+          name: install-web-tooling
+          script: |
+            set -euo pipefail
+            curl -fsSL https://github.com/voidzero-dev/vite-plus/releases/download/v0.3.1/vp-x86_64-unknown-linux-gnu.tar.gz -o /tmp/vp.tar.gz
+            echo "a3a728816a5937fbfd06d9987c8d8a1152c6a90de22a827b840079140021d030  /tmp/vp.tar.gz" | sha256sum --check
+            mkdir -p /opt/vp
+            tar -xzf /tmp/vp.tar.gz -C /opt/vp
+            /opt/vp/vp env off
+        - &stage-backend-tests
+          name: backend-tests
+          script: |
+            set -euo pipefail
+            python3 -m venv .venv-ci
+            ./.venv-ci/bin/pip install --require-hashes --only-binary=:all: -r requirements.txt
+            ./.venv-ci/bin/python scripts/run_backend_tests.py
+        - &stage-web-gates
+          name: web-gates
+          script: |
+            set -euo pipefail
+            export PATH="/opt/vp:$PATH"
+            repo_root="$(pwd -P)"
+            export PLAYWRIGHT_BROWSERS_PATH="$repo_root/.playwright-browsers"
+            # The native SSO suite boots the real Python backend, so it must use
+            # an absolute interpreter path whose pinned dependencies exist.
+            venv="$repo_root/.venv-ci"
+            if [ ! -x "$venv/bin/python" ]; then
+              python3 -m venv "$venv"
+              "$venv/bin/pip" install --require-hashes --only-binary=:all: -r "$repo_root/requirements.txt"
+            fi
+            export WEBUI_PYTHON="$venv/bin/python"
+            cd web
+            vp install --frozen-lockfile
+            vp check
+            vp test run
+            vp build
+            vp exec playwright install --with-deps chromium-headless-shell
+            vp exec playwright test
+            # Native SSO suite: self-starting and a required CI gate, so it runs
+            # unconditionally. The external integration suite needs
+            # AZUREKILN_INTEGRATION_URL, so it stays a manual suite only.
+            vp exec playwright test -c playwright.native.config.ts
+        - &stage-package
+          name: build-release-package
+          script: |
+            set -euo pipefail
+            python3 scripts/package.py
+            python3 scripts/package.py --verify "dist/$(python3 -c 'import json; print(json.load(open("dist/build-manifest.json"))["archive"])')"
+        - &stage-read-manifest
+          name: read-build-manifest
+          type: cnb:read-file
+          options:
+            filePath: dist/build-manifest.json
+          exports:
+            archive: RELEASE_ARCHIVE
+
+  api_trigger: *verify-build
+
+  # Same gates as a `main` push; no registry login, no Release, no attachments.
+  pull_request: *verify-build
+
+"v*":
+  tag_push:
+    - name: publish-release-and-image
+      docker:
+        image: cnbcool/default-dev-env:latest
+      services:
+        - docker
+      env:
+        GOMAXPROCS: "2"
+        GOMEMLIMIT: 512MiB
+        RAYON_NUM_THREADS: "2"
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      stages:
+        - *stage-check-version
+        - *stage-install-web-tooling
+        - *stage-backend-tests
+        - *stage-web-gates
+        - *stage-package
+        - *stage-read-manifest
+        # Images are pushed BEFORE any Release exists: an image build failure
+        # (the common failure mode) must not leave a Release behind. Residual
+        # window: if the attachment upload fails after `create-release`, the
+        # Release exists without assets; `git:release` supports no `draft`
+        # option and cannot carry attachments itself, so the repair path is a
+        # re-run of this pipeline (idempotent via `overlying: true`).
+        - name: publish-image
+          script: |
+            set -euo pipefail
+            eval "$(python3 scripts/release_tags.py --platform cnb --emit shell)"
+            registry_password="${CNB_REGISTRY_PASSWORD:-${CNB_TOKEN:?CNB_TOKEN is not set}}"
+            echo "$registry_password" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+            platforms="${CNB_PLATFORMS:-linux/amd64,linux/arm64}"
+            if printf '%s' "$platforms" | grep -q 'arm64'; then
+              docker run --privileged --rm tonistiigi/binfmt --install arm64 || true
+            fi
+            docker buildx create --use --name codebuddy2api-release >/dev/null 2>&1 \
+              || docker buildx use codebuddy2api-release
+            tags=""
+            for ref in $REFS; do tags="$tags --tag $ref"; done
+            # Refs come from the shared resolver: stable tags include `latest`,
+            # prereleases only publish their exact and commit tags.
+            docker buildx build --platform "$platforms" --push $tags .
+            echo "published: $REFS"
+        - name: prepare-release-metadata
+          script: |
+            set -euo pipefail
+            python3 scripts/package.py --publish-options
+        # `overlying: true` (written by package.py) keeps the Release idempotent
+        # instead of the default delete-then-recreate behavior.
+        - name: create-release
+          type: git:release
+          optionsFrom: dist/cnb-release-options.json
+        - name: upload-release-assets
+          image: cnbcool/attachments:latest
+          settings:
+            attachments:
+              - dist/$RELEASE_ARCHIVE
+              - dist/$RELEASE_ARCHIVE.sha256

@@ -43,7 +43,7 @@ function media() {
 beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
-  useAppearance.setState({ mode: "system", palette: "green", dark: false, persisted: true });
+  useAppearance.setState({ mode: "system", palette: "blue", dark: false, persisted: true });
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -52,19 +52,18 @@ afterEach(() => {
 });
 
 describe("appearance and presence", () => {
-  it("follows live system changes, keeps dark separate, and restores the light palette", () => {
+  it("follows system theme changes and preserves the AzureKiln palette", () => {
     const change = media();
     render(<Appearance />);
     fireEvent.click(screen.getByRole("button", { name: "外观设置" }));
-    fireEvent.click(screen.getByLabelText("雾蓝"));
     expect(document.documentElement.dataset.palette).toBe("blue");
     act(() => change("(prefers-color-scheme: dark)", true));
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(screen.getByRole("group", { name: "浅色配色" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("group", { name: "浅色配色" })).toBeNull();
     fireEvent.click(screen.getByLabelText("浅色"));
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(document.documentElement.dataset.palette).toBe("blue");
-    expect(JSON.parse(localStorage.getItem("codebuddy.appearance")!)).toEqual({
+    expect(JSON.parse(localStorage.getItem("azurekiln.appearance")!)).toEqual({
       mode: "light",
       palette: "blue",
     });
@@ -74,10 +73,10 @@ describe("appearance and presence", () => {
   });
   it("handles broken or unavailable storage without losing the in-session choice", () => {
     media();
-    expect(parseAppearance("broken")).toEqual({ mode: "system", palette: "green" });
+    expect(parseAppearance("broken")).toEqual({ mode: "system", palette: "blue" });
     expect(parseAppearance('{"mode":"invalid","palette":"invalid"}')).toEqual({
       mode: "system",
-      palette: "green",
+      palette: "blue",
     });
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("blocked");

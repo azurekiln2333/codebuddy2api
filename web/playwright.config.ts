@@ -1,6 +1,11 @@
 import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
+  // Real-service suites have their own configs and must not run in the mocked
+  // default gate: `e2e/backend.integration.ts` (playwright.integration.config.ts)
+  // and `e2e/native-sso.integration.ts` (playwright.native.config.ts).
+  // `e2e/serve.mjs` is the dev server, not a spec.
+  testIgnore: ["**/*.integration.ts", "serve.mjs"],
   timeout: 30000,
   globalTimeout: 90000,
   workers: 1,

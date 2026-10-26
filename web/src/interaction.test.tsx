@@ -143,14 +143,14 @@ describe("collapsible navigation", () => {
       data: path === "/models" ? { revision: 0, models: [] } : { credentials: [] },
     }));
     const first = mount();
-    fireEvent.click(screen.getByRole("button", { name: "收起侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
     expect(screen.getByRole("button", { name: "展开侧栏" }).getAttribute("aria-expanded")).toBe(
       "false",
     );
     expect(screen.getByRole("link", { name: "模型路由" }).getAttribute("href")).toBe(
       "/dashboard/models",
     );
-    expect(localStorage.getItem("codebuddy.sidebar.collapsed")).toBe("true");
+    expect(localStorage.getItem("azurekiln.sidebar.collapsed")).toBe("true");
     first.unmount();
     mount();
     await waitFor(() => expect(screen.getByRole("button", { name: "展开侧栏" })).toBeTruthy());
@@ -162,7 +162,17 @@ describe("collapsible navigation", () => {
       throw new Error("blocked");
     });
     mount();
-    fireEvent.click(screen.getByRole("button", { name: "收起侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
     expect(screen.getByRole("button", { name: "展开侧栏" })).toBeTruthy();
+  });
+  it("keeps navigation labels mounted so the collapse only animates them", () => {
+    vi.spyOn(api, "get").mockReturnValue(new Promise(() => {}));
+    mount();
+    const label = screen.getByRole("link", { name: "日志审计" }).querySelector("span");
+    expect(label?.textContent).toBe("日志审计");
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
+    // The text node survives in icon mode; CSS fades it out instead.
+    expect(label?.isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: "日志审计" })).toBeTruthy();
   });
 });

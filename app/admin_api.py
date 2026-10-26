@@ -20,6 +20,7 @@ from .admin_auth import AdminAuth, AdminMiddleware, COOKIE_NAME, SESSION_TTL, er
 from .control_store import ConflictError, validate_model
 from .credential_io import CredentialFileError, MAX_CREDENTIAL_BYTES, _valid_name, read_import_file
 from .settings import SCHEMA, resolve_settings, validate_settings
+from .sso_auth import SSOAdminMiddleware
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 CLEAR_CONFIRMATION = "清空全部日志与统计"
@@ -73,15 +74,25 @@ def _public_credential(item):
     return result
 
 
-def install_admin(app, config, gateway):
-    """Install management routes using configured stores, stable inventory IDs and safe filenames."""
+def install_admin(app, config, gateway, sso=None):
+    """Install management routes using configured stores, stable inventory IDs and safe filenames.
+
+    ``sso`` is an active :class:`app.sso_auth.SSOService` when native OIDC mode is
+    enabled. In that mode the API-key session routes are not installed at all, so
+    neither a stored key cookie nor a Bearer/X-Api-Key header can authorize a
+    management request.
+    """
     if getattr(app.state, "admin_installed", False):
         return app.state.admin_auth
     control, audit = config["control_store"], config["audit_store"]
-    auth = AdminAuth(config)
-    # Resolve the key epoch now: a process that only serves inference traffic would
-    # otherwise never clear a snapshot belonging to a superseded key.
-    auth.reconcile()
+    sso_mode = sso is not None
+    if sso_mode:
+        auth = None
+    else:
+        auth = AdminAuth(config)
+        # Resolve the key epoch now: a process that only serves inference traffic would
+        # otherwise never clear a snapshot belonging to a superseded key.
+        auth.reconcile()
     mutation_lock = threading.RLock()
     # The confirmed credential delete shares this lock so rule edits cannot interleave.
     config["admin_mutation_lock"] = mutation_lock
@@ -117,8 +128,10 @@ def install_admin(app, config, gateway):
         items.append({"key": "auto_accept_buddy", "value": config.get("auto_accept_buddy") is True,
                       "stored": None, "source": config.get("auto_accept_buddy_source", "default"),
                       "mode": "startup", "type": "boolean", "label": "全部国内账号首次领猫预授权", "locked": True})
+        session_state = ({"path": None, "degraded": False, "last_error": None} if auth is None
+                         else auth.storage())
         return {"revision": control.snapshot()["revision"], "items": items, "audit": audit.storage(),
-                "session": auth.storage()}
+                "session": session_state}
 
     def audit_settings(values):
         mapping = {"audit_max_bytes": "max_bytes", "audit_retention_days": "retention_days",
@@ -207,8 +220,12 @@ def install_admin(app, config, gateway):
         return None
 
     # Middleware is deliberately installed only here, never on module import.
-    app.add_middleware(AdminMiddleware, auth=auth, dispatch=dispatch)
+    if sso_mode:
+        app.add_middleware(SSOAdminMiddleware, sso=sso, config=config, dispatch=dispatch)
+    else:
+        app.add_middleware(AdminMiddleware, auth=auth, dispatch=dispatch)
     app.state.admin_auth = auth
+    app.state.sso = sso
     app.state.admin_installed = True
 
     def route(method, path):
@@ -230,34 +247,35 @@ def install_admin(app, config, gateway):
             return function
         return decorate
 
-    @route("POST", "/admin/session")
-    async def session_login(request):
-        if auth.csrf_enabled() and not same_origin(request, auth.allowed_origins()):
-            return error_response(403, "登录请求 Origin 校验失败")
-        data = await _body(request, 8192)
-        result, status = auth.login(request, data.get("api_key"))
-        if not result:
-            return error_response(status, "登录尝试过多，请稍后重试" if status == 429 else "API key 无效")
-        sid, session = result
-        response = JSONResponse({"authenticated": True, "csrf_token": session["csrf_token"]})
-        response.set_cookie(COOKIE_NAME, sid, max_age=SESSION_TTL, httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/admin")
-        return response
+    if not sso_mode:
+        @route("POST", "/admin/session")
+        async def session_login(request):
+            if auth.csrf_enabled() and not same_origin(request, auth.allowed_origins()):
+                return error_response(403, "登录请求 Origin 校验失败")
+            data = await _body(request, 8192)
+            result, status = auth.login(request, data.get("api_key"))
+            if not result:
+                return error_response(status, "登录尝试过多，请稍后重试" if status == 429 else "API key 无效")
+            sid, session = result
+            response = JSONResponse({"authenticated": True, "csrf_token": session["csrf_token"]})
+            response.set_cookie(COOKIE_NAME, sid, max_age=SESSION_TTL, httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/admin")
+            return response
 
-    @route("GET", "/admin/session")
-    async def session_get(request):
-        _, session = auth.session(request)
-        return JSONResponse({"authenticated": bool(session or auth.header_identity(request)),
-                             "csrf_token": session["csrf_token"] if session else None})
+        @route("GET", "/admin/session")
+        async def session_get(request):
+            _, session = auth.session(request)
+            return JSONResponse({"authenticated": bool(session or auth.header_identity(request)),
+                                 "csrf_token": session["csrf_token"] if session else None})
 
-    @route("DELETE", "/admin/session")
-    async def session_delete(request):
-        if not auth.logout(request):
-            # The session is still valid on disk; keep the cookie so the client can retry.
-            event("session.revoke_failed", {"code": "session_storage_unavailable"})
-            return error_response(503, "会话未能持久撤销，请检查管理目录权限后重试")
-        response = JSONResponse({"authenticated": False})
-        response.delete_cookie(COOKIE_NAME, path="/admin", httponly=True, samesite="strict", secure=request.url.scheme == "https")
-        return response
+        @route("DELETE", "/admin/session")
+        async def session_delete(request):
+            if not auth.logout(request):
+                # The session is still valid on disk; keep the cookie so the client can retry.
+                event("session.revoke_failed", {"code": "session_storage_unavailable"})
+                return error_response(503, "会话未能持久撤销，请检查管理目录权限后重试")
+            response = JSONResponse({"authenticated": False})
+            response.delete_cookie(COOKIE_NAME, path="/admin", httponly=True, samesite="strict", secure=request.url.scheme == "https")
+            return response
 
     @route("GET", "/admin/settings")
     async def settings_get(request):
@@ -527,7 +545,12 @@ def install_admin(app, config, gateway):
         scope = body.get("scope")
         if scope not in ("details", "all"):
             raise ValueError("清理范围必须为 details 或 all")
-        if scope == "all" and (body.get("confirmation") != CLEAR_CONFIRMATION or not auth.check_key(body.get("api_key"))):
+        if scope == "all" and body.get("confirmation") != CLEAR_CONFIRMATION:
+            return error_response(403, "全部清理需要确认文本及当前 API key")
+        if scope == "all" and not sso_mode and not auth.check_key(body.get("api_key")):
+            # Legacy mode still proves the caller knows the management key. In SSO
+            # mode the trusted SSO identity replaces it and the browser-supplied
+            # api_key is never read.
             return error_response(403, "全部清理需要确认文本及当前 API key")
         result = await run_in_threadpool(audit.clear, scope)
         if isinstance(result, dict) and result.get("ok") is False:

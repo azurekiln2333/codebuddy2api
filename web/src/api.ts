@@ -3,29 +3,55 @@ import { create } from "zustand";
 import { useCallback, useEffect, useState } from "react";
 
 export type RecordValue = Record<string, unknown>;
-export type Session = { authenticated: true; csrf_token: string };
+export type AdminUser = { sub: string; username?: string; name?: string; role: "admin" };
+export type Session = { authenticated: true; csrf_token: string; user: AdminUser };
 type AuthState = {
-  status: "checking" | "authenticated" | "anonymous" | "error";
+  status: "checking" | "authenticated" | "anonymous" | "forbidden" | "error";
   csrf: string | null;
+  user: AdminUser | null;
   error: string | null;
 };
 export const useSession = create<AuthState>(() => ({
   status: "checking",
   csrf: null,
+  user: null,
   error: null,
 }));
 export const api = axios.create({ baseURL: "/admin", withCredentials: true, timeout: 20000 });
+export const sso = axios.create({ baseURL: "/sso", withCredentials: true, timeout: 20000 });
+export const SSO_LOGIN_URL = "/sso/login?return_to=/dashboard/";
+// A session check may finish after a newer check, revocation or logout. Only
+// requests from the current generation may change the active session.
+let sessionGeneration = 0;
+const requestSessions = new WeakMap<object, number>();
+const forbiddenMessage =
+  "访问被拒绝：当前账号没有管理员权限、权限已撤回，或会话校验失败。请重新登录或联系管理员。";
+function invalidateSession(error: unknown, generation: number) {
+  if (generation !== sessionGeneration || !axios.isAxiosError(error)) return;
+  if (error.response?.status === 401) {
+    sessionGeneration++;
+    useSession.setState({ status: "anonymous", csrf: null, user: null, error: null });
+  }
+  if (error.response?.status === 403) {
+    sessionGeneration++;
+    useSession.setState({ status: "forbidden", csrf: null, user: null, error: forbiddenMessage });
+  }
+}
 api.interceptors.request.use((config) => {
-  const csrf = useSession.getState().csrf;
-  if (csrf) config.headers.set("X-CSRF-Token", csrf);
+  const { csrf, status } = useSession.getState();
+  const write = !["get", "head", "options"].includes(config.method?.toLowerCase() ?? "get");
+  const poll = config.url?.split("?")[0] === "/oauth/poll";
+  if ((write || poll) && (status !== "authenticated" || !csrf?.trim()))
+    throw new Error("当前会话不可用，请重新登录后再操作。");
+  if (csrf?.trim()) config.headers.set("X-CSRF-Token", csrf);
+  requestSessions.set(config, sessionGeneration);
   return config;
 });
 api.interceptors.response.use(
   (response) => response,
   (error: unknown) => {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
-      useSession.setState({ status: "anonymous", csrf: null, error: null });
-    }
+    if (axios.isAxiosError(error) && error.config)
+      invalidateSession(error, requestSessions.get(error.config) ?? -1);
     return Promise.reject(error);
   },
 );
@@ -93,8 +119,7 @@ export function errorMessage(error: unknown): string {
       return "保存冲突：配置已被其他操作更新。请关闭编辑并刷新后重新修改。";
     }
     if (error.response?.status === 401) return "会话已失效，请重新登录。";
-    if (error.response?.status === 403)
-      return serverMessage ?? "操作被拒绝：请检查当前 key、管理锁定或重新登录刷新 CSRF。";
+    if (error.response?.status === 403) return serverMessage ?? forbiddenMessage;
     if (serverMessage) return serverMessage;
     const data: unknown = error.response?.data;
     if (data && typeof data === "object" && "detail" in data) {
@@ -124,28 +149,69 @@ export function errorMessage(error: unknown): string {
   }
   return error instanceof Error ? error.message : "操作失败，请重试。";
 }
-export async function establishSession(apiKey?: string) {
+export async function establishSession() {
+  const generation = ++sessionGeneration;
+  useSession.setState({ status: "checking", csrf: null, user: null, error: null });
   try {
-    const response =
-      apiKey === undefined
-        ? await api.get<unknown>("/session")
-        : await api.post<unknown>("/session", { api_key: apiKey });
+    const response = await sso.get<unknown>("/session");
+    if (generation !== sessionGeneration) return;
     const data = object(response.data, "会话");
     if (data.authenticated === false) {
-      useSession.setState({ status: "anonymous", csrf: null, error: null });
+      if (data.csrf_token !== null || data.user !== null)
+        throw new Error("未登录会话响应不符合接口契约");
+      useSession.setState({ status: "anonymous", csrf: null, user: null, error: null });
       return;
     }
-    if (data.authenticated !== true || typeof data.csrf_token !== "string" || !data.csrf_token)
-      throw new Error("会话响应缺少认证状态或 CSRF token");
-    useSession.setState({ status: "authenticated", csrf: data.csrf_token, error: null });
+    if (
+      data.authenticated !== true ||
+      typeof data.csrf_token !== "string" ||
+      !data.csrf_token.trim()
+    )
+      throw new Error("会话响应缺少认证状态或有效的 CSRF token");
+    const user = object(data.user, "管理员身份");
+    if (
+      typeof user.sub !== "string" ||
+      !user.sub.trim() ||
+      (user.username !== undefined && typeof user.username !== "string") ||
+      (user.name !== undefined && typeof user.name !== "string")
+    )
+      throw new Error("会话响应缺少有效的管理员身份");
+    if (user.role !== "admin") {
+      useSession.setState({ status: "forbidden", csrf: null, user: null, error: forbiddenMessage });
+      return;
+    }
+    useSession.setState({
+      status: "authenticated",
+      csrf: data.csrf_token,
+      user: {
+        sub: user.sub,
+        role: "admin",
+        ...(typeof user.username === "string" ? { username: user.username } : {}),
+        ...(typeof user.name === "string" ? { name: user.name } : {}),
+      },
+      error: null,
+    });
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
-      useSession.setState({ status: "anonymous", csrf: null, error: null });
-      if (apiKey !== undefined) throw new Error("API key 无效或管理界面未启用。");
+    if (generation !== sessionGeneration) return;
+    if (axios.isAxiosError(error) && [401, 403].includes(error.response?.status ?? 0)) {
+      invalidateSession(error, generation);
       return;
     }
-    useSession.setState({ status: "error", csrf: null, error: errorMessage(error) });
-    if (apiKey !== undefined) throw error;
+    useSession.setState({ status: "error", csrf: null, user: null, error: errorMessage(error) });
+  }
+}
+export async function endSession() {
+  const { csrf, status } = useSession.getState();
+  if (status !== "authenticated" || !csrf?.trim()) throw new Error("当前会话不可用，请重新登录。");
+  const generation = ++sessionGeneration;
+  try {
+    await sso.post("/logout", null, { headers: { "X-CSRF-Token": csrf } });
+    if (generation !== sessionGeneration) return;
+    sessionGeneration++;
+    useSession.setState({ status: "anonymous", csrf: null, user: null, error: null });
+  } catch (error) {
+    invalidateSession(error, generation);
+    throw error;
   }
 }
 // Session-level response cache for heavy pages (model routing): reopening the

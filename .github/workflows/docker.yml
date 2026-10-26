@@ -1,26 +1,39 @@
-name: Docker images
+name: Build, package and release
+
+# One pipeline validates the whole application, packages the release archive and
+# only then publishes. Version, image tag and package contracts live in
+# `scripts/` so this workflow and `.cnb.yml` cannot drift apart.
+#
+# * pull_request: validate + build, never log in or publish
+# * push main:    validate + package + publish `edge`
+# * push v*:      validate + package, publish the versioned images, and only
+#                 then create the Release. A tag whose image failed is never
+#                 recorded as a successful release.
 
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
-    tags: ['v*.*.*']
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: docker-${{ github.ref }}
+  # Never cancel an in-flight tag release; PR runs may supersede each other.
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,20 +45,17 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements.txt
-      - name: Check release version
+      - name: Validate authoritative version
         id: version
-        run: python scripts/check_version.py
+        run: python scripts/check_version.py --check-pyproject --check-compose
       - name: Install test dependencies
         run: 'python -m pip install --require-hashes --only-binary=:all: -r requirements.txt'
-      - name: Run regression tests
-        run: |
-          for script in tests/test_*.py; do
-            python -B "$script"
-          done
+      - name: Run backend regression tests
+        run: python scripts/run_backend_tests.py
 
   web:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       GOMAXPROCS: '2'
       GOMEMLIMIT: 512MiB
@@ -87,12 +97,120 @@ jobs:
         run: |
           vp exec playwright install --with-deps chromium-headless-shell
           vp exec playwright test
-          vp exec playwright test -c playwright.integration.config.ts
+          # Native SSO suite: self-starting and a required CI gate, so it runs
+          # unconditionally. The external integration suite needs
+          # AZUREKILN_INTEGRATION_URL, so it stays a manual suite only.
+          vp exec playwright test -c playwright.native.config.ts
 
-  image:
+  package:
     needs: [test, web]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    outputs:
+      archive: ${{ steps.package.outputs.archive }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.21.0'
+      - name: Install pinned vp
+        run: |
+          curl -fsSL https://github.com/voidzero-dev/vite-plus/releases/download/v0.3.1/vp-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/vp.tar.gz"
+          echo "a3a728816a5937fbfd06d9987c8d8a1152c6a90de22a827b840079140021d030  $RUNNER_TEMP/vp.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/vp"
+          tar -xzf "$RUNNER_TEMP/vp.tar.gz" -C "$RUNNER_TEMP/vp"
+          echo "$RUNNER_TEMP/vp" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/vp/vp" env off
+      - name: Build console bundle
+        working-directory: web
+        env:
+          GOMAXPROCS: '2'
+          GOMEMLIMIT: 512MiB
+          RAYON_NUM_THREADS: '2'
+        run: |
+          vp install --frozen-lockfile
+          vp build
+      - name: Build release archive
+        id: package
+        run: python scripts/package.py
+      - name: Verify release archive
+        run: python scripts/package.py --verify "dist/${{ steps.package.outputs.archive }}"
+      - name: Upload release archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-archive
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/build-manifest.json
+            dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    # PRs and branch pushes never publish a GitHub release.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Ordered gate: the Release is written only after the images are pushed, so a
+    # failed image build cannot leave a Release that claims a published version.
+    # `image` must stay unskipped for tags (it carries no `if:` of its own and
+    # pushes when ref is a `v*` tag), otherwise this dependency skips the job.
+    needs: [test, package, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download release archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-archive
+          path: dist
+      - name: Publish release (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.test.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.test.outputs.version }}
+          RELEASE_PRERELEASE: ${{ needs.test.outputs.prerelease }}
+          RELEASE_ARCHIVE: ${{ needs.package.outputs.archive }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check "${RELEASE_ARCHIVE}.sha256"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$RELEASE_ARCHIVE" "${RELEASE_ARCHIVE}.sha256" --clobber
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
+              gh release edit "$RELEASE_TAG" --notes-file release-notes.md --prerelease
+            else
+              gh release edit "$RELEASE_TAG" --notes-file release-notes.md --latest
+            fi
+          else
+            flags=()
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" "$RELEASE_ARCHIVE" "${RELEASE_ARCHIVE}.sha256" \
+              --verify-tag --title "codebuddy2api v$RELEASE_VERSION" \
+              --notes-file release-notes.md "${flags[@]}"
+          fi
+
+  image:
+    # No `if:` guard on purpose: this job must still run for tag pushes because
+    # `release` depends on it. On PRs it builds without logging in or pushing.
+    needs: [test, web, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -101,42 +219,37 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Resolve publication tags
+        id: release
+        run: python scripts/release_tags.py --platform github --emit github
       - name: Set up QEMU
         uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
         with:
           platforms: arm64
       - name: Set up Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - name: Log in to GHCR
+      - name: Log in to the registry
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
+          registry: ${{ steps.release.outputs.registry }}
+          username: ${{ steps.release.outputs.registry_user || github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/${{ github.repository }}
-          flavor: latest=auto
-          tags: |
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=pr
-            type=sha
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-          labels: |
-            org.opencontainers.image.version=${{ needs.test.outputs.version }}
       - name: Build and publish
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.release.outputs.refs }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.test.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=min

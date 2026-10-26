@@ -6,7 +6,7 @@ export { DrawerPresence } from "./presence";
 import s from "./ui.module.scss";
 import { useT } from "./i18n";
 
-export function Icon({ name = "grid" }: { name?: string }) {
+export function Icon({ name = "grid", size = 16 }: { name?: string; size?: number }) {
   const paths: Record<string, string> = {
     grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
     model: "m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5",
@@ -17,6 +17,8 @@ export function Icon({ name = "grid" }: { name?: string }) {
     plus: "M12 5v14M5 12h14",
     collapse: "M4 4h16v16H4zM9 4v16m7-12-3 4 3 4",
     expand: "M4 4h16v16H4zM9 4v16m4-12 3 4-3 4",
+    menu: "M4 6h16M4 12h16M4 18h16",
+    search: "M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15Zm5.5 13 5 5",
     refresh: "M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15",
     close: "m6 6 12 12M6 18 18 6",
     shield: "m12 2 8 3v6c0 5-8 11-8 11S4 16 4 11V5l8-3Zm-4 9 3 3 5-6",
@@ -24,6 +26,14 @@ export function Icon({ name = "grid" }: { name?: string }) {
     alert: "m12 3 10 18H2L12 3Zm0 5v6m0 3v1",
     appearance:
       "M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-3.7 1.5 1.5 0 0 1 1-2.8h2a4 4 0 0 0 4-4C21 6.4 17 3 12 3ZM7 10h.01M10 7h.01M15 7h.01M17 10h.01",
+    chevronDown: "m6 9 6 6 6-6",
+    chevronRight: "m9 6 6 6-6 6",
+    user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0",
+    logout: "M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10",
+    cloud: "M7 18a4 4 0 0 1 0-8 5.5 5.5 0 0 1 10.5-1.2A3.5 3.5 0 0 1 18 18H7Z",
+    loader:
+      "M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1",
+    external: "M14 4h6v6M20 4l-9 9M18 14v5H5V6h5",
     sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5",
     moon: "M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z",
     system: "M3 4h18v13H3zM8 21h8m-4-4v4",
@@ -36,8 +46,8 @@ export function Icon({ name = "grid" }: { name?: string }) {
   };
   return (
     <svg
-      width="20"
-      height="20"
+      width={size}
+      height={size}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -59,11 +69,10 @@ export function PageTitle({
   description?: string;
   actions?: ReactNode;
 }) {
-  // The header breadcrumb already names the page; keep the h1 for screen readers only.
   return (
     <div className={s.pageTitle}>
       <div>
-        <h1 className={s.srOnly}>{title}</h1>
+        <h1>{title}</h1>
         {description && <p>{description}</p>}
       </div>
       <div className={s.actions}>{actions}</div>
@@ -216,7 +225,6 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
   const t = useT();
   const [scope, setScope] = useState<"details" | "all">("details");
   const [confirmation, setConfirmation] = useState("");
-  const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -224,15 +232,13 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          if (busy || (scope === "all" && confirmation !== CLEAR_CONFIRMATION)) return;
           setBusy(true);
           setError(null);
-          const currentKey = key;
-          setKey("");
           void api
             .post("/logs/clear", {
               scope,
               confirmation: scope === "all" ? confirmation : "",
-              ...(scope === "all" ? { api_key: currentKey } : {}),
             })
             .then((response) => {
               if (object(response.data).ok !== true) throw new Error(t("logs.clear.unconfirmed"));
@@ -247,10 +253,10 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
           {t("logs.clear.scope")}
           <select
             value={scope}
+            disabled={busy}
             onChange={(e) => {
               setScope(e.target.value as "details" | "all");
               setConfirmation("");
-              setKey("");
             }}
           >
             <option value="details">{t("logs.clear.detailsOnly")}</option>
@@ -265,31 +271,20 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
           </div>
         </div>
         {scope === "all" && (
-          <>
-            <label className={s.field}>
-              输入“{CLEAR_CONFIRMATION}”
-              <input
-                value={confirmation}
-                onChange={(e) => setConfirmation(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
-            <label className={s.field}>
-              {t("common.currentApiKey")}
-              <input
-                type="password"
-                value={key}
-                onChange={(e) => setKey(e.target.value)}
-                autoComplete="off"
-                required
-              />
-            </label>
-          </>
+          <label className={s.field}>
+            输入“{CLEAR_CONFIRMATION}”
+            <input
+              value={confirmation}
+              disabled={busy}
+              onChange={(e) => setConfirmation(e.target.value)}
+              autoComplete="off"
+            />
+          </label>
         )}
         <ErrorNotice message={error} />
         <button
           className={s.danger}
-          disabled={busy || (scope === "all" && (confirmation !== CLEAR_CONFIRMATION || !key))}
+          disabled={busy || (scope === "all" && confirmation !== CLEAR_CONFIRMATION)}
         >
           {busy ? t("logs.clear.busy") : t("logs.clear.confirm")}
         </button>

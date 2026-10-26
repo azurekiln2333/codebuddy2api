@@ -6,6 +6,7 @@ __pycache__/
 .Python
 venv/
 .venv/
+.venv-ci/
 env/
 ENV/
 *.egg-info/
@@ -16,6 +17,9 @@ ENV/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local release packaging output (scripts/package.py)
+/dist/
 
 # Untracked local implementation plans
 /docs/plans/

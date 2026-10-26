@@ -54,22 +54,18 @@ const settings = {
 };
 
 describe("concise user-facing copy", () => {
-  it("keeps the login card free of storage and implementation notes", () => {
+  it("offers SSO without accepting an administrative key", () => {
     useSession.setState({ status: "anonymous", csrf: null, error: null });
     const { container } = render(
       <MemoryRouter initialEntries={["/dashboard/login"]}>
         <AppRoutes />
       </MemoryRouter>,
     );
-    const card = screen.getByRole("heading", { name: "登录管理控制台" }).parentElement!;
-    expect(Array.from(card.children, (node) => node.tagName.toLowerCase())).toEqual([
-      "svg",
-      "h2",
-      "form",
-    ]);
-    expect(screen.getByLabelText("API key", { exact: true })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "进入工作台" })).toBeTruthy();
-    expect(container.querySelectorAll("p")).toHaveLength(0);
+    expect(screen.getByRole("heading", { name: "登录 CodeBuddy2Api" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /登录/ }).getAttribute("href")).toBe(
+      "/sso/login?return_to=/dashboard/",
+    );
+    expect(container.querySelector("input, form")).toBeNull();
   });
 
   it("renders titles and empty states without developer explanations", () => {
@@ -97,10 +93,10 @@ describe("concise user-facing copy", () => {
     expect(screen.getByText("已保存：60")).toBeTruthy();
     expect(screen.queryByText("当前生效：未知")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: /外部锁定/ }));
-    expect(screen.getByText("环境变量")).toBeTruthy();
+    expect(screen.queryByText("管理密钥")).toBeNull();
     expect(screen.getByText("命令行")).toBeTruthy();
     expect(screen.getByText("重启后生效")).toBeTruthy();
-    expect(screen.getAllByText("外部锁定")).toHaveLength(2);
+    expect(screen.getAllByText("外部锁定")).toHaveLength(1);
     expect(container.textContent).not.toMatch(
       /revision|schema|WebUI 不写入|服务端校验为准|内部常量/,
     );

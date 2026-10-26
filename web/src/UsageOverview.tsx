@@ -3,6 +3,7 @@ import { compact, metric, number, text, type RecordValue } from "./api";
 import { Empty, Icon } from "./components";
 import { useT } from "./i18n";
 import s from "./ui.module.scss";
+import dashboard from "./dashboard.module.scss";
 
 function delta(current: number | null, previous: number | null): string | null {
   if (current === null || previous === null || previous === 0) return null;
@@ -205,22 +206,46 @@ export function KpiCards({
       "var(--series-tokens)",
     ],
   ];
+  const renderCard = (
+    [label, icon, value, exactText, sub, spark, color]: (typeof cards)[number],
+    primary: boolean,
+  ) => (
+    <section
+      className={`${s.kpiCard} ${dashboard.metricCard} ${primary ? dashboard.primaryMetric : dashboard.tokenMetric}`}
+      key={label}
+    >
+      <div className={dashboard.metricHeading}>
+        <span>{label}</span>
+        <span className={dashboard.metricIcon}>
+          <Icon name={icon} />
+        </span>
+      </div>
+      <KpiValue label={label} display={value} exact={exactText} />
+      <small>{sub}</small>
+      <Spark values={spark} color={color} />
+    </section>
+  );
   return (
-    <div className={s.kpiGrid}>
-      {cards.map(([label, icon, value, exactText, sub, spark, color]) => (
-        <section className={s.kpiCard} key={label}>
-          <div>
-            <span>{label}</span>
-            <span>
-              <Icon name={icon} />
-            </span>
-          </div>
-          <KpiValue label={label} display={value} exact={exactText} />
-          <small>{sub}</small>
-          <Spark values={spark} color={color} />
-        </section>
-      ))}
-    </div>
+    <section className={dashboard.overview} aria-labelledby="usage-overview-title">
+      <div className={dashboard.overviewHeading}>
+        <span className={dashboard.sectionIcon}>
+          <Icon name="grid" />
+        </span>
+        <div>
+          <h2 id="usage-overview-title">{t("dash.usageOverview")}</h2>
+          <p>{t("dash.usageOverviewHint")}</p>
+        </div>
+      </div>
+      <div className={`${s.kpiGrid} ${dashboard.primaryMetrics}`}>
+        {cards.slice(0, 4).map((card) => renderCard(card, true))}
+      </div>
+      <div className={dashboard.tokenSection}>
+        <h3>{t("dash.tokenBreakdown")}</h3>
+        <div className={dashboard.tokenMetrics}>
+          {cards.slice(4).map((card) => renderCard(card, false))}
+        </div>
+      </div>
+    </section>
   );
 }
 

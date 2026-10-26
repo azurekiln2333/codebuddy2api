@@ -4,3 +4,23 @@ dist/
 .cache/
 playwright-report/
 test-results/
+/public/LICENSE.upstream.txt
+/public/THIRD_PARTY_NOTICES.txt
+/public/THIRD_PARTY_LICENSES.txt
+.env
+.env.local
+.tmp-*
+.herdr-approve-*
+*.zip
+
+# Local AI agent tooling (not shared)
+.agents/
+.claude/
+.codebuddy/
+.codex/
+.cursor/
+.dsh/
+.pi/
+.qoder/
+.trae/
+.zcode/

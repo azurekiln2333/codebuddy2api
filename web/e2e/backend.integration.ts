@@ -1,4 +1,26 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+// The real gateway fixture owns identity, so this spec signs in through the SSO
+// contract and then drives the preserved `/admin/*` workflow with the gateway
+// CSRF token. The browser never holds the original administrative API key.
+async function signIn(page: Page) {
+  const response = await page.request.get("/sso/session");
+  expect(response.status()).toBe(200);
+  const session = await response.json();
+  expect(session.authenticated).toBe(true);
+  expect(typeof session.csrf_token).toBe("string");
+  expect(session.user.role).toBe("admin");
+  await page.goto("/dashboard/");
+  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
+  return { csrf: session.csrf_token as string, sub: session.user.sub as string };
+}
+
+function writeHeaders(csrf: string) {
+  return {
+    Origin: new URL(process.env.AZUREKILN_INTEGRATION_URL!).origin,
+    "X-CSRF-Token": csrf,
+  };
+}
 
 test("real management API: session, model alias, audit, clear, and file credentials", async ({
   page,
@@ -6,10 +28,8 @@ test("real management API: session, model alias, audit, clear, and file credenti
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
-  await expect(page).toHaveURL(/\/dashboard\/login$/);
-  await page.getByLabel("API key", { exact: true }).fill("synthetic-e2e-key");
-  await page.getByRole("button", { name: "进入工作台" }).click();
-  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
+  await expect(page).toHaveURL(/\/dashboard\/$/);
+  const { csrf } = await signIn(page);
   await expect(page.getByText("125", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "模型路由" }).click();
   await page.getByRole("button", { name: "编辑规则" }).click();
@@ -53,9 +73,8 @@ test("real management API: session, model alias, audit, clear, and file credenti
   await expect(page.getByText("garden-fixture", { exact: true }).first()).toBeVisible();
   await page.screenshot({ path: "test-results/backend-real-audit.png", fullPage: true });
   const summaryBefore = await (await page.request.get("/admin/dashboard?days=1")).json();
-  const session = await (await page.request.get("/admin/session")).json();
   const cleared = await page.request.post("/admin/logs/clear", {
-    headers: { Origin: "http://127.0.0.1:5175", "X-CSRF-Token": session.csrf_token },
+    headers: writeHeaders(csrf),
     data: { scope: "details" },
   });
   expect(cleared.status()).toBe(200);
@@ -63,7 +82,7 @@ test("real management API: session, model alias, audit, clear, and file credenti
   expect(summaryAfter.summary.requests).toBe(summaryBefore.summary.requests);
   expect(summaryAfter.summary.credit).toBe(0);
   expect((await (await page.request.get("/admin/credentials")).json()).credentials).toHaveLength(1);
-  await page.goto("/dashboard");
+  await page.goto("/dashboard/");
   await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
   await expect(page.getByText("125", { exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/backend-real-dashboard.png", fullPage: true });
@@ -81,16 +100,12 @@ test("manual trial uses the real admin API and persists success and failed-attem
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("/dashboard/login");
-  await page.getByLabel("API key", { exact: true }).fill("synthetic-e2e-key");
-  await page.getByRole("button", { name: "进入工作台" }).click();
-  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
-  const session = await (await page.request.get("/admin/session")).json();
+  const { csrf } = await signIn(page);
   const settings = await (await page.request.get("/admin/settings")).json();
   expect(settings.items.some((item: { key: string }) => item.key === "auto_trial")).toBe(false);
   for (const uid of ["trial-timeout", "trial-success"]) {
     const response = await page.request.post("/admin/credentials/upload", {
-      headers: { Origin: "http://127.0.0.1:5175", "X-CSRF-Token": session.csrf_token },
+      headers: writeHeaders(csrf),
       data: {
         files: [
           {

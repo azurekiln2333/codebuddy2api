@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { GATEWAY_CSRF, mockSession } from "./sso";
 
 for (const width of [1440, 375]) {
   test(`model declarations, profile variants and preflight settings at ${width}px`, async ({
     page,
   }) => {
     await page.setViewportSize({ width, height: 1050 });
+    await mockSession(page);
     const errors: string[] = [];
     const external: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -16,8 +18,6 @@ for (const width of [1440, 375]) {
     await page.route("**/admin/**", async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
-      if (path === "/admin/session")
-        return route.fulfill({ json: { authenticated: true, csrf_token: "synthetic-csrf" } });
       if (path === "/admin/credentials") return route.fulfill({ json: { credentials: [] } });
       if (path === "/admin/models")
         return route.fulfill({
@@ -82,7 +82,7 @@ for (const width of [1440, 375]) {
         });
       if (path === "/admin/settings") {
         if (request.method() === "PATCH") {
-          expect(request.headers()["x-csrf-token"]).toBe("synthetic-csrf");
+          expect(request.headers()["x-csrf-token"]).toBe(GATEWAY_CSRF);
           expect(request.postDataJSON()).toEqual({
             revision,
             values: { model_capability_guard: false },

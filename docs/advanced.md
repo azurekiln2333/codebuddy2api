@@ -181,9 +181,13 @@ Travel results include `phase`, optional safe `error_kind`/`http_status`/`code`,
 
 Pages use `/dashboard/*`, management APIs use `/admin/*`, and clients retain `/v1/*`. `/cn` and `/intl` API prefixes are not registered. Automatic model routing requires no client URL changes.
 
-Management requires an API key. The WebUI exchanges that key for an HttpOnly management Cookie, which only authorizes `/admin/*`, not `/v1/*`. API clients send `Authorization: Bearer <key>` or `X-Api-Key`. An empty key preserves legacy unauthenticated inference only, not management. `/health` never exposes account, path or exception details.
+Production Compose enables native OAuth2/OIDC console login. Configure `PUBLIC_ORIGIN` and the OIDC client as described in [deployment](deployment.md); register `${PUBLIC_ORIGIN}/sso/callback`. The replacement WebUI uses an HttpOnly SSO cookie for `/admin/*`. Each request checks the current administrator role through UserInfo. API-key headers and the legacy key-login endpoint cannot bypass SSO. Inference clients still send `Authorization: Bearer <key>` or `X-Api-Key` to `/v1/*`; the console cookie does not authorize inference.
+
+For compatibility, direct Python startup defaults to `CODEBUDDY2API_SSO_ENABLED=false`. This legacy mode retains API-key management and its cookie/session endpoints for existing API integrations. The replacement WebUI requires SSO; enable and configure it to use the console. An empty key retains the original inference behavior but never opens legacy management. `/health` exposes no account, path or exception details.
 
 ### Management Origin / CSRF switch
+
+In SSO mode, writes and credential-enrollment polling always require the session CSRF token. Writes require an `Origin` matching `PUBLIC_ORIGIN`; same-origin GET polling may use a matching `Referer` when the browser omits `Origin`. Cross-site Fetch Metadata is rejected. `CODEBUDDY2API_ADMIN_CSRF=false` and the legacy `admin_allowed_origins` setting cannot relax these checks. Set the public HTTPS origin correctly behind a reverse proxy. The following switch applies only to legacy non-SSO management.
 
 Enabled by default. When OAuth polling omits both `Origin` and `Sec-Fetch-Site`, a same-origin `Referer` (matching scheme, host and port) is accepted, but a valid CSRF token is still required. An existing `Origin` takes precedence; without it, supplied Fetch Metadata must be `same-origin` and cannot fall back to Referer. Login and writes still require Origin.
 
@@ -283,7 +287,7 @@ Readable history is kept in `reasoning_content`, never ordinary answer text. Res
 
 | Symptom | Behavior / action |
 |---------|-------------------|
-| Cannot sign in to WebUI | Configure an API key; sign in and restart unfinished OAuth after changing it. Behind an HTTPS reverse proxy, trust the public origin via `admin_allowed_origins` (see above) |
+| Cannot sign in to WebUI | Enable SSO; check `PUBLIC_ORIGIN`, issuer/client settings and the registered `/sso/callback` URI. The identity provider must return matching `sub`, `role=admin` and `isAdmin=true` from UserInfo. A restart clears sessions; sign in again. See [deployment](deployment.md) |
 | Local 401 | Client key differs from the gateway key |
 | Upstream 401 / 403 | Credential-level authentication circuit opens; inspect and log in again in the WebUI |
 | 429 | Cool down that upstream model on the credential; later requests rebind automatically. All candidates cooling down still returns 429; with `--failover-max` the in-flight request is replayed on another credential instead |

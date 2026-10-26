@@ -181,9 +181,13 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 页面使用 `/dashboard/*`，管理 API 使用 `/admin/*`，客户端保留原 `/v1/*`；不注册 `/cn`、`/intl` API 前缀。模型自动选路不要求客户端改变地址。
 
-管理必须配置 API key；WebUI 使用同 key 建立 HttpOnly 管理 Cookie，Cookie 仅授权 `/admin/*`，不能用于 `/v1/*`。命令行 API 请求携带 `Authorization: Bearer <key>` 或 `X-Api-Key`。空 key 仅保留推理接口的历史无鉴权行为，不开放管理；`/health` 不返回账号、路径或异常详情。
+生产 Compose 启用原生 OAuth2/OIDC 控制台登录。按[部署文档](deployment.zh-CN.md)配置 `PUBLIC_ORIGIN` 与 OIDC 客户端，并登记 `${PUBLIC_ORIGIN}/sso/callback` 回调。新版 WebUI 使用 HttpOnly SSO Cookie 访问 `/admin/*`，每次请求通过 UserInfo 检查当前管理员权限。API key 请求头和旧 key 登录接口都不能绕过 SSO。推理客户端仍向 `/v1/*` 发送 `Authorization: Bearer <key>` 或 `X-Api-Key`；控制台 Cookie 不能授权推理。
+
+直接运行 Python 时，为兼容已有 API 集成，`CODEBUDDY2API_SSO_ENABLED` 默认 `false`，保留旧 API key 管理及会话接口。新版 WebUI 需要启用并配置 SSO。空 key 保留原有推理行为，但不会开放旧管理接口。`/health` 不返回账号、路径或异常详情。
 
 ### 管理 Origin / CSRF 开关
+
+SSO 模式下，写操作和凭证授权轮询始终要求会话 CSRF token。写操作要求与 `PUBLIC_ORIGIN` 一致的 `Origin`；浏览器同源 GET 轮询省略 `Origin` 时，可使用匹配的 `Referer`。跨站 Fetch Metadata 会被拒绝。`CODEBUDDY2API_ADMIN_CSRF=false` 和旧 `admin_allowed_origins` 配置都不能放宽这些检查。反代部署应正确设置公网 HTTPS 来源。下面的开关仅适用于关闭 SSO 的旧管理模式。
 
 默认开启。OAuth 轮询在 `Origin`、`Sec-Fetch-Site` 均缺失时，兼容同源 `Referer`（协议、主机、端口一致），仍要求有效 CSRF token。已有 `Origin` 优先校验；无 `Origin` 但有 Fetch Metadata 时，只接受 `same-origin`，不会再用 Referer 回退。登录和写操作仍要求 Origin。
 
@@ -283,7 +287,7 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 
 | 现象 | 处理与边界 |
 |------|------------|
-| WebUI 无法登录 | 确认设置了 API key；更换 key 后重新登录并重新发起未完成的 OAuth。HTTPS 反代后经域名登录失败时，用 `admin_allowed_origins` 信任对外来源（见上文） |
+| WebUI 无法登录 | 启用 SSO，检查 `PUBLIC_ORIGIN`、issuer/client 配置和登记的 `/sso/callback` 回调；身份服务的 UserInfo 必须返回匹配的 `sub`、`role=admin` 和 `isAdmin=true`。重启会清除会话，需重新登录。详见[部署文档](deployment.zh-CN.md) |
 | 本地 401 | 客户端密钥与网关不一致 |
 | 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录 |
 | 429 | 对该凭证的上游模型冷却，后续请求自动换绑；全部候选都在冷却时仍返回 429。设了 `--failover-max` 时，当前请求就地换凭证重放 |

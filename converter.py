@@ -73,6 +73,7 @@ from app.adapters.chat_input import normalize_chat_messages
 from app.model_catalog_view import INTERNATIONAL as SHARED_INTL_PROFILES, share_models
 from app.inference_auth import require_api_key
 from app.admin_auth import SessionStoreError
+from app.sso_config import SSOConfigError
 from app.content_filter import ContentFilterDetector, is_filter_error
 from app.request_limits import ImageLimitError, apply_image_policy
 from app.safe_logging import format_log_body, sanitize_log_text
@@ -4393,7 +4394,11 @@ def main():
         sys.stderr.write("[log] --log / CODEBUDDY2API_LOG 已停用；请在 WebUI 查看 SQLite 日志。\n")
     CONFIG["log_path"] = None
     from app import runtime_management
-    runtime_management.initialize(sys.modules[__name__], args, parser=ap, dotenv_keys=dotenv_keys)
+    try:
+        runtime_management.initialize(sys.modules[__name__], args, parser=ap, dotenv_keys=dotenv_keys)
+    except SSOConfigError as error:
+        # Fail closed before any store is opened or listener socket accepted.
+        ap.error(f"CODEBUDDY2API_SSO_ENABLED=true 时配置无效：{error}")
     # Validate effective binding and authentication before credential scans or background work.
     if (args.host not in ("127.0.0.1", "::1", "localhost") and not CONFIG.get("api_key")
             and not allows_open_noauth()):
@@ -4453,6 +4458,11 @@ def main():
         sys.stderr.write("   每日签到 + 快过期积分优先调度已启用\n")
     if args.api_key:
         sys.stderr.write("   鉴权已启用（API key 已设置）\n")
+    if CONFIG.get("sso") is not None and CONFIG["sso"].enabled:
+        sys.stderr.write("   管理登录：已启用原生 OIDC SSO（/sso/login）；管理接口不接受 API key 回退\n")
+        sys.stderr.write(f"   公开来源：{CONFIG['sso'].public_origin}（回调 {CONFIG['sso'].redirect_uri}）\n")
+    else:
+        sys.stderr.write("   管理登录：API key 会话（CODEBUDDY2API_SSO_ENABLED 未开启）\n")
     if not CONFIG["admin_csrf"]:
         sys.stderr.write("   警告：管理 Origin/CSRF 校验已关闭，仅限受信任本地环境；API key 与会话校验仍启用。\n")
     sys.stderr.write(f"   图片限制  : {CONFIG['max_images']} 张/请求，策略 {CONFIG['image_policy']}\n")

@@ -1,13 +1,14 @@
 {
-  "name": "codebuddy-admin",
-  "version": "0.0.0",
+  "name": "codebuddy2api-web",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "check": "vp check",
+    "check": "vp check src e2e scripts vite.config.ts playwright.config.ts playwright.integration.config.ts playwright.native.config.ts tsconfig.json index.html package.json",
     "test": "vp test run",
     "build": "vp build",
+    "preview": "vp preview --host 127.0.0.1 --port 4174",
     "test:browser": "playwright test"
   },
   "dependencies": {

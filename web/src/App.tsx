@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
-import { api, establishSession, errorMessage, useSession } from "./api";
-import { ErrorNotice, Icon } from "./components";
+import { useEffect, useId, useRef, useState } from "react";
+import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
+import { endSession, establishSession, errorMessage, SSO_LOGIN_URL, useSession } from "./api";
+import { Drawer, ErrorNotice, Icon } from "./components";
 import { Dashboard } from "./pages/Dashboard";
 import { Models } from "./pages/Models";
 import { Credentials } from "./pages/Credentials";
@@ -12,33 +12,83 @@ import { Appearance } from "./appearance";
 import s from "./ui.module.scss";
 import { LanguageProvider, useT } from "./i18n";
 
-const navigation = [
-  ["", "nav.overview", "grid"],
-  ["/models", "nav.models", "model"],
-  ["/credentials", "nav.credentials", "key"],
-  ["/logs", "nav.logs", "logs"],
-  ["/storage", "nav.storage", "database"],
-  ["/settings", "nav.settings", "settings"],
+// Two reference-style groups: operational console surfaces first, then the
+// management and access surfaces.
+const navigationGroups = [
+  {
+    title: "nav.caption.console",
+    tag: "nav.caption.consoleTag",
+    items: [
+      ["", "nav.overview", "grid"],
+      ["/credentials", "nav.credentials", "key"],
+      ["/models", "nav.models", "model"],
+    ],
+  },
+  {
+    title: "nav.caption.manage",
+    items: [
+      ["/logs", "nav.logs", "logs"],
+      ["/storage", "nav.storage", "database"],
+      ["/settings", "nav.settings", "settings"],
+    ],
+  },
 ];
+const navigation = navigationGroups.flatMap((group) => group.items);
+function BrandMark() {
+  return (
+    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <path d="m16 3 12 7v13l-12 7L4 23V10L16 3Z" fill="currentColor" />
+      <path
+        d="m4 10 12 7 12-7M16 17v13M10 6.5l12 7v6.8"
+        stroke="var(--brand, #3169df)"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+function BrandText() {
+  const t = useT();
+  return (
+    <span className={s.brandText}>
+      {t("app.brandPrefix")}
+      <span className={s.brandAccent}>{t("app.brandAccent")}</span>
+      {t("app.brandSuffix")}
+    </span>
+  );
+}
+// First painted frame: brand mark, restrained loader and the exact reference
+// status copy. The status role keeps assistive technology informed.
+function BootScreen() {
+  const t = useT();
+  return (
+    <div className={s.boot} role="status">
+      <span className={s.brandIcon}>
+        <BrandMark />
+      </span>
+      <span className={s.spin}>
+        <Icon name="loader" size={20} />
+      </span>
+      <span>{t("app.connecting")}</span>
+    </div>
+  );
+}
 export function Guard() {
   const t = useT();
   const { status, error } = useSession();
-  if (status === "checking")
-    return (
-      <div className={s.center} role="status">
-        {t("app.verifying")}
-      </div>
-    );
-  if (status === "error")
+  if (status === "checking") return <BootScreen />;
+  if (status === "error" || status === "forbidden")
     return (
       <div className={s.center}>
+        {status === "forbidden" && <h1>{t("app.accessDenied")}</h1>}
         <ErrorNotice
           message={error}
           retry={() => {
             void establishSession();
           }}
         />
-        <NavLink to="/dashboard/login">{t("app.backToSignIn")}</NavLink>
+        <a className={s.linkButton} href={SSO_LOGIN_URL}>
+          {status === "forbidden" ? t("app.otherAccount") : t("app.backToSignIn")}
+        </a>
       </div>
     );
   return status === "authenticated" ? <Outlet /> : <Navigate to="/dashboard/login" replace />;
@@ -46,11 +96,48 @@ export function Guard() {
 function Shell() {
   const t = useT();
   const location = useLocation();
+  const user = useSession((state) => state.user);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const [mobile, setMobile] = useState(
+    () => window.matchMedia?.("(max-width: 800px)").matches ?? false,
+  );
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 800px)");
+    if (!media) return;
+    const changed = () => {
+      setMobile(media.matches);
+      setNavigationOpen(false);
+    };
+    media.addEventListener("change", changed);
+    return () => media.removeEventListener("change", changed);
+  }, []);
+  // Dismiss the account panel on Escape or an outside pointer press.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const dismiss = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent) {
+        if (event.key === "Escape") setMenuOpen(false);
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Node && menu.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
+    document.addEventListener("click", dismiss);
+    document.addEventListener("keydown", dismiss);
+    return () => {
+      document.removeEventListener("click", dismiss);
+      document.removeEventListener("keydown", dismiss);
+    };
+  }, [menuOpen]);
   const [collapsed, setCollapsed] = useState(() => {
     try {
-      return localStorage.getItem("codebuddy.sidebar.collapsed") === "true";
+      return localStorage.getItem("azurekiln.sidebar.collapsed") === "true";
     } catch {
       return false;
     }
@@ -59,158 +146,263 @@ function Shell() {
     const next = !collapsed;
     setCollapsed(next);
     try {
-      localStorage.setItem("codebuddy.sidebar.collapsed", String(next));
+      localStorage.setItem("azurekiln.sidebar.collapsed", String(next));
     } catch {
       /* Session-only preference when storage is unavailable. */
     }
   };
+  const signOut = () => {
+    setMenuOpen(false);
+    setBusy(true);
+    setError(null);
+    void endSession()
+      .catch((err: unknown) => setError(errorMessage(err)))
+      .finally(() => setBusy(false));
+  };
+  const initial = (user?.name || user?.username || "").trim().slice(0, 1).toUpperCase();
+  const activeKey =
+    navigation.find(
+      ([path]) => `/dashboard${path}` === location.pathname.replace(/\/$/, ""),
+    )?.[1] ?? "nav.overview";
+  const renderNavigation = (inDrawer = false) => (
+    <>
+      <nav
+        id={inDrawer ? "mobile-navigation" : "workspace-navigation"}
+        aria-label={t("app.primaryNav")}
+      >
+        {navigationGroups.map((group) => (
+          <div className={s.navGroup} key={group.title}>
+            <p className={s.navCaption}>
+              {t(group.title)}
+              {group.tag && <span>{t(group.tag)}</span>}
+            </p>
+            {group.items.map(([path, labelKey, icon]) => {
+              const label = t(labelKey);
+              return (
+                <NavLink
+                  key={path}
+                  to={
+                    path === ""
+                      ? location.pathname === "/dashboard"
+                        ? "/dashboard"
+                        : "/dashboard/"
+                      : `/dashboard${path}`
+                  }
+                  end={path === ""}
+                  aria-label={label}
+                  title={!inDrawer && collapsed ? label : undefined}
+                  data-label={label}
+                  onClick={() => setNavigationOpen(false)}
+                  className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
+                >
+                  <Icon name={icon} size={17} />
+                  <span className={s.navText}>{label}</span>
+                </NavLink>
+              );
+            })}
+          </div>
+        ))}
+      </nav>
+      <div className={s.sidebarBottom}>
+        <span className={s.sidebarHelp}>
+          <i className={s.blueDot} />
+          {t("footer.gateway")}
+        </span>
+      </div>
+    </>
+  );
   return (
     <div className={`${s.app} ${collapsed ? s.collapsed : ""}`}>
       <a href="#main" className={s.skip}>
         {t("app.skip")}
       </a>
-      <aside className={s.sidebar}>
-        <div className={s.sidebarHead}>
-          <NavLink className={s.brand} to="/dashboard" aria-label={t("app.brandAria")}>
-            <span className={s.brandIcon}>
-              <Icon name="leaf" />
-            </span>
-            <span className={s.brandText}>
-              CodeBuddy<small>{t("app.brandSubtitle")}</small>
-            </span>
-          </NavLink>
+      <header className={s.header}>
+        <div className={s.topbarLeading}>
           <button
+            type="button"
             className={s.sidebarToggle}
-            onClick={toggleSidebar}
-            aria-label={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
-            aria-expanded={!collapsed}
-            aria-controls="workspace-navigation"
-            title={collapsed ? t("app.expandSidebar") : t("app.collapseSidebar")}
+            onClick={() => (mobile ? setNavigationOpen(true) : toggleSidebar())}
+            aria-label={
+              mobile
+                ? t("app.openNavigation")
+                : collapsed
+                  ? t("app.expandSidebar")
+                  : t("app.collapseSidebar")
+            }
+            aria-expanded={mobile ? navigationOpen : !collapsed}
+            aria-controls={mobile ? "mobile-navigation" : "workspace-navigation"}
+            aria-haspopup={mobile ? "dialog" : undefined}
+            title={
+              mobile
+                ? t("app.openNavigation")
+                : collapsed
+                  ? t("app.expandSidebar")
+                  : t("app.collapseSidebar")
+            }
           >
-            <Icon name={collapsed ? "expand" : "collapse"} />
+            <Icon name={mobile ? "menu" : collapsed ? "expand" : "collapse"} />
           </button>
-        </div>
-        <p className={s.navLabel}>{t("app.workspace")}</p>
-        <nav id="workspace-navigation" aria-label={t("app.primaryNav")}>
-          {navigation.map(([path, labelKey, icon]) => {
-            const label = t(labelKey);
-            return (
-              <NavLink
-                key={path}
-                to={`/dashboard${path}`}
-                end={path === ""}
-                aria-label={label}
-                title={collapsed ? label : undefined}
-                data-label={label}
-                className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
-              >
-                <Icon name={icon} />
-                <span className={s.navText}>{label}</span>
-                <span className={s.navArrow}>
-                  <Icon name="arrow" />
-                </span>
-              </NavLink>
-            );
-          })}
-        </nav>
-      </aside>
-      <div className={s.workspace}>
-        <header className={s.header}>
-          <span>
-            {t("app.workspace")} <span className={s.separator}>/</span>{" "}
-            {t(
-              navigation.find(([path]) => `/dashboard${path}` === location.pathname)?.[1] ??
-                "nav.overview",
-            )}
-          </span>
-          <div className={s.actions}>
-            <Appearance />
-            <span className={s.session}>
-              <span />
-              {t("app.sessionActive")}
+          <Link className={s.brand} to="/dashboard/" aria-label={t("app.brandAria")}>
+            <span className={s.brandIcon}>
+              <BrandMark />
             </span>
-            <button
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                void api
-                  .delete("/session")
-                  .then(() => useSession.setState({ status: "anonymous", csrf: null, error: null }))
-                  .catch((err: unknown) => setError(errorMessage(err)))
-                  .finally(() => setBusy(false));
-              }}
-            >
-              {t("app.signOut")}
-            </button>
+            <BrandText />
+          </Link>
+          <div className={s.breadcrumbs}>
+            <span>{t("nav.caption.console")}</span>
+            <Icon name="chevronRight" size={13} />
+            <strong>{t(activeKey)}</strong>
           </div>
-        </header>
+        </div>
+        <div className={s.actions}>
+          <Appearance />
+          <span className={s.topbarSeparator} />
+          <div className={s.userMenu} ref={menu}>
+            <button
+              type="button"
+              className={s.userTrigger}
+              aria-label={t("app.userMenu")}
+              title={user?.sub}
+              aria-expanded={menuOpen}
+              aria-controls={menuOpen ? menuId : undefined}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <span className={s.userAvatar}>{initial || <Icon name="user" size={15} />}</span>
+              <Icon name="chevronDown" size={14} />
+            </button>
+            {menuOpen && (
+              <div id={menuId} className={s.userPanel} role="group" aria-label={t("app.userMenu")}>
+                <div className={s.userIdentity}>
+                  <span className={`${s.userAvatar} ${s.large}`}>
+                    {initial || <Icon name="user" size={17} />}
+                  </span>
+                  <span className={s.userIdentityText}>
+                    <strong>{user?.name || user?.username || t("app.adminSession")}</strong>
+                    <small>{user?.sub}</small>
+                  </span>
+                </div>
+                <div className={s.userMenuSep} />
+                <button type="button" className={s.userLogout} disabled={busy} onClick={signOut}>
+                  <Icon name="logout" size={15} />
+                  <span>{t("app.signOut")}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+      {!mobile && <aside className={s.sidebar}>{renderNavigation()}</aside>}
+      {mobile && navigationOpen && (
+        <Drawer
+          title={t("app.primaryNav")}
+          className={s.navigationDrawer}
+          onClose={() => setNavigationOpen(false)}
+        >
+          {renderNavigation(true)}
+        </Drawer>
+      )}
+      <div className={s.workspace}>
         <main id="main" className={s.main}>
           <ErrorNotice message={error} />
           <Outlet />
         </main>
-        <footer className={s.footer}>CodeBuddy2API</footer>
+        <footer className={s.pageFooter}>
+          <span>
+            <i className={s.blueDot} />
+            {t("footer.gateway")}
+            <span className={s.footerDot}>·</span>
+            <span className={s.footerProduct}>{t("app.brandName")}</span>
+          </span>
+          {/* Plain anchors: the gateway serves these two documents as text/plain,
+           * so the browser must navigate instead of the SPA router handling it.
+           * Without this the built notices have no reachable entry point. */}
+          <span className={s.footerLinks}>
+            <a href="/dashboard/THIRD_PARTY_NOTICES.txt">{t("footer.notices")}</a>
+            <a href="/dashboard/THIRD_PARTY_LICENSES.txt" rel="license">
+              {t("footer.licenses")}
+            </a>
+          </span>
+        </footer>
       </div>
     </div>
   );
 }
 function Login() {
   const t = useT();
-  const status = useSession((state) => state.status);
-  const [key, setKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  if (status === "authenticated") return <Navigate to="/dashboard" replace />;
+  const { status, error } = useSession();
+  if (status === "authenticated") return <Navigate to="/dashboard/" replace />;
+  const forbidden = status === "forbidden";
   return (
-    <div className={s.login}>
-      <div className={s.loginAppearance}>
-        <Appearance />
-      </div>
-      <section className={s.loginIntro}>
-        <div className={s.brand}>
+    <div className={s.loginShell}>
+      <section className={s.loginStory}>
+        <span className={s.brand}>
           <span className={s.brandIcon}>
-            <Icon name="leaf" />
+            <BrandMark />
           </span>
-          CodeBuddy
+          <BrandText />
+          <span className={s.brandTag}>{t("app.consoleTag")}</span>
+        </span>
+        <div className={s.loginStoryContent}>
+          <span className={s.eyebrow}>
+            <i className={s.blueDot} />
+            {t("login.story.eyebrow")}
+          </span>
+          <h1>
+            {t("login.story.headline1")}
+            <br />
+            {t("login.story.headline2")}
+          </h1>
+          <div className={s.networkArt} aria-hidden="true">
+            <div className={s.networkCenter}>
+              <Icon name="model" size={26} />
+              <span>{t("login.network.center")}</span>
+            </div>
+            <svg className={s.networkEdges} viewBox="0 0 440 200">
+              <path d="M110 100H210Q240 100 240 50T280 25H335M210 100H335M210 100Q240 100 240 150T280 175H335" />
+            </svg>
+            {[1, 2, 3].map((node) => (
+              <div className={`${s.networkNode} ${s[`node${node}`]}`} key={node}>
+                <Icon name="cloud" size={19} />
+                <span>{t("login.network.node", { n: node })}</span>
+                <i />
+              </div>
+            ))}
+          </div>
         </div>
-        <h1>{t("login.subtitle")}</h1>
-        <div className={s.loginOrbit}>
-          <Icon name="leaf" />
+        <div className={s.loginStoryFooter}>
+          <span>{t("login.story.footer")}</span>
         </div>
       </section>
-      <section className={s.loginCard}>
-        <Icon name="shield" />
-        <h2>{t("login.title")}</h2>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setBusy(true);
-            setError(null);
-            const value = key;
-            setKey("");
-            void establishSession(value)
-              .catch((err: unknown) => setError(errorMessage(err)))
-              .finally(() => setBusy(false));
-          }}
-        >
-          <label className={s.field}>
-            API key
-            <input
-              type="password"
-              name="api-key"
-              autoComplete="off"
-              required
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={t("login.keyPlaceholder")}
-            />
-          </label>
+      <main className={s.loginMain}>
+        <div className={s.loginTheme}>
+          <Appearance />
+        </div>
+        <div className={s.loginCard}>
+          <span className={s.loginLock}>
+            <Icon name="shield" size={25} />
+          </span>
+          <span className={s.eyebrow}>{t("login.form.eyebrow")}</span>
+          <h2>{forbidden ? t("app.accessDenied") : t("login.codebuddy2apiSignIn")}</h2>
+          <p>{t("login.accessHint")}</p>
           <ErrorNotice message={error} />
-          <button className={s.primary} disabled={busy || !key.trim()}>
-            {busy ? t("login.verifying") : t("login.enter")}
-            <Icon name="arrow" />
-          </button>
-        </form>
-      </section>
+          <a className={`${s.linkButton} ${s.loginSubmit} ${s.primary}`} href={SSO_LOGIN_URL}>
+            <Icon name="shield" size={16} />
+            <span>{forbidden ? t("app.otherAccount") : t("login.ssoSignIn")}</span>
+            <Icon name="arrow" size={16} />
+          </a>
+          {(status === "error" || status === "forbidden") && (
+            <button
+              type="button"
+              className={s.loginRecheck}
+              onClick={() => {
+                void establishSession();
+              }}
+            >
+              {t("login.recheck")}
+            </button>
+          )}
+        </div>
+      </main>
     </div>
   );
 }
@@ -228,7 +420,7 @@ export function AppRoutes() {
           <Route path="storage" element={<Storage />} />
         </Route>
       </Route>
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<Navigate to="/dashboard/" replace />} />
     </Routes>
   );
 }

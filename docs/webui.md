@@ -4,9 +4,9 @@
 
 ## Open the console
 
-Start the gateway using the [deployment guide](deployment.md), then open `http://127.0.0.1:8787/dashboard` and sign in with the current API key. Source installs need a frontend build; Docker builds include it. Use HTTPS unless connecting locally.
+Start the application using the [deployment guide](deployment.md), then open `<PUBLIC_ORIGIN>/dashboard/` and use the organization sign-in action. The identity provider must authorize your account as an administrator. The image includes the console; a source installation builds `web/` first.
 
-The first unconfigured local startup generates and saves a default key, shown once in the terminal and reused afterward. An explicitly empty key locks management. After changing the effective key, sign in again and restart unfinished OAuth logins.
+Console login uses OAuth2/OIDC and an HttpOnly session cookie. The browser never asks for the inference API key. On startup, the connecting screen checks the session before showing protected data. Expired sessions return to sign-in; denied administrator access is shown separately and request failures can be retried. Application restarts require signing in again because SSO sessions are held in memory. Account enrollment through Credentials is a separate OAuth flow.
 
 ## Overview
 
@@ -43,7 +43,7 @@ Add independent mappings with public/upstream IDs and local enablement. Choose e
 
 Filter requests and inspect failed attempts. Closing details or switching log type cancels pending detail loads. Clearing details keeps historical statistics.
 
-Clearing **all logs and statistics** is irreversible. Enter the confirmation text shown in the dialog and re-enter the current API key. This does not delete credentials or gateway settings.
+Clearing **all logs and statistics** is irreversible. Enter the exact confirmation text shown in the dialog. The server checks the authorized SSO session and CSRF token; the browser does not send an administrative API key. This does not delete credentials or gateway settings.
 
 ## Settings
 
@@ -51,7 +51,7 @@ Edit unlocked options; hot changes apply immediately, while restart-marked setti
 
 - "Keep tool descriptions" is off by default and works across all three protocols, independently of prompt compaction; see [tool metadata retention](advanced.md#tool-metadata-retention).
 - "Model capability preflight" defaults to on. Disabling it affects new requests only, not metadata display, international image-run merging or existing security limits; see [model declarations](advanced.md#model-declarations-and-image-compatibility).
-- "Extra trusted management origins" (`admin_allowed_origins`) fixes sign-in behind HTTPS reverse proxies; see [Management Origin checks](advanced.md#management-origin--csrf-switch).
+- Configure SSO's public origin and OIDC client in the deployment environment. `admin_allowed_origins` belongs to the legacy management mode; it does not change the identity provider's callback registration or SSO origin checks.
 
 ## Interface behavior
 

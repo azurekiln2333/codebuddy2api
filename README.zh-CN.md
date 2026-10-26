@@ -1,28 +1,34 @@
 # codebuddy2api
 
-把 **WorkBuddy / CodeBuddy（腾讯代码助手）** 订阅变成本机可用的 **OpenAI / Anthropic 兼容 API**。
+把 **WorkBuddy / CodeBuddy（腾讯代码助手）** 订阅变成本机可用的 **OpenAI / Anthropic 兼容 API**。本二开仓库统一提供原生 OAuth2/OIDC 登录、React 控制台和镜像发布。
 
 [English](README.md)
 
 - 支持 Chat Completions、Responses 和 Anthropic Messages，包含工具调用与流式输出。
-- 内置 **WebUI**：扫码添加账号，管理模型、凭证、日志与设置，无需桌面端。
+- 内置 **WebUI**：组织单点登录，管理模型、凭证、日志与设置。
 - 多账号自动选路，兼容国内／国际站，自动刷新凭证。
 - 按账号配置自动任务：国内默认签到后派 Buddy 旅行，可分别关闭；国际自动签到默认关闭。
 
 ## 快速开始
 
-需要 Git 和 Docker Compose；直接拉取 GHCR 已构建镜像（内含 WebUI），无需在本机编译。
+准备 Git 和 Docker Compose。先通过本仓库的 GitHub 或 CNB 工作流发布镜像。应用镜像包含后端和控制台。
 
 ```bash
-git clone https://github.com/maiphucgiang/codebuddy2api.git
+git clone https://github.com/<your-account>/codebuddy2api.git
 cd codebuddy2api
 cp .env.example .env
 ```
 
-编辑 `.env`：将 `CODEBUDDY2API_KEY` 设置为自己的随机密钥，并指定镜像；升级时保留已有 `.env`：
+编辑 `.env`，填写自己的镜像和推理密钥。配置控制台的 OIDC 客户端。在身份提供方登记 `<PUBLIC_ORIGIN>/sso/callback`。升级时保留已有 `.env`。
 
 ```dotenv
-CODEBUDDY2API_IMAGE=ghcr.io/maiphucgiang/codebuddy2api:latest
+CODEBUDDY2API_IMAGE=ghcr.io/<your-account>/codebuddy2api:latest
+CODEBUDDY2API_KEY=replace-with-a-random-inference-key
+CODEBUDDY2API_SSO_ENABLED=true
+PUBLIC_ORIGIN=https://api.example.com
+OIDC_ISSUER=https://sso.example.com
+OIDC_CLIENT_ID=codebuddy2api
+OIDC_CLIENT_SECRET=replace-with-your-client-secret
 ```
 
 ```bash
@@ -34,11 +40,19 @@ docker compose up -d --no-build
 
 首次使用：
 
-1. 打开 **http://127.0.0.1:8787/dashboard**，使用刚设置的 API key 登录。
+1. 打开 **`<PUBLIC_ORIGIN>/dashboard/`**。通过组织身份提供方登录管理员账号。
 2. 在「凭证管理」扫码添加国内或国际账号，也可导入 `.info` 文件。
 3. 在「模型路由」查看可用模型，将其对外 ID 填入客户端。
 
-按模板配置时仅允许本机访问。远程访问前请配置 HTTPS 并限制网络访问；保留并妥善备份 `auth/` 数据目录。如需直接运行源码或在终端登录，见[部署指南](docs/deployment.zh-CN.md)。
+模板默认绑定本机地址。通过反向代理提供配置中的 HTTPS 站点。保留完整的 `auth/` 数据目录。[部署指南](docs/deployment.zh-CN.md)包含 CNB 镜像、本地构建、自动更新和版本回退。
+
+开启自动检查和更新镜像：
+
+```bash
+docker compose --profile auto-update up -d --no-build
+```
+
+更新器只选择本应用带标签的容器。`latest` 跟随稳定版。固定版本标签可控制升级时机。跨数据结构版本升级前先备份数据。
 
 ## 客户端接入
 
@@ -47,7 +61,7 @@ docker compose up -d --no-build
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
 
-- **API Key**：与 WebUI 登录使用同一个密钥。
+- **API Key**：推理客户端使用 `CODEBUDDY2API_KEY`。浏览器控制台使用 SSO 会话。
 - **模型**：使用 WebUI 中的对外 ID，或查询 `GET /v1/models`。
 - 国内、国际账号共用这些地址，无需额外的地域参数。Anthropic SDK 会自行追加 `/v1/messages`，不要把它写入 Base URL。
 
@@ -63,11 +77,13 @@ docker compose up -d --no-build
 ├── tests/               # 离线回归测试
 ├── docs/                # 用户文档（中英双语）
 ├── examples/            # 客户端配置示例
-├── scripts/             # 版本与依赖锁定工具
+├── scripts/             # 版本校验、发布打包与依赖锁定工具
 ├── Dockerfile           # 多阶段镜像：前端构建 + Python 运行时
-├── docker-compose.yml   # 推荐部署方式
+├── docker-compose.yml   # 镜像部署与自动更新 profile
+├── docker-compose.build.yaml # 本地镜像构建覆盖配置
 ├── .env.example         # 全部运行时环境变量及注释
-└── .github/workflows/   # CI：测试、镜像发布、CodeQL
+├── .cnb.yml             # CNB 校验、发行包与镜像发布
+└── .github/workflows/   # GitHub 校验、Release、镜像与 CodeQL
 ```
 
 ## 文档
@@ -78,13 +94,14 @@ docker compose up -d --no-build
 | [部署指南](docs/deployment.zh-CN.md) | 发布镜像、升级、反向代理/HTTPS、本地运行与命令行登录 |
 | [客户端配置](docs/clients.zh-CN.md) | Codex CLI、Claude Code、CC Switch 与通用客户端 |
 | [进阶参考](docs/advanced.zh-CN.md) | 参数、API、模型调度、请求限制与故障排查 |
+| [开发说明](docs/development.md) | 统一架构、本地校验、原生 SSO 联调与发布（英文） |
 
 ## 常见问题
 
-- **绑定域名后经 HTTPS 反代无法登录 WebUI？** 将对外来源加入 `admin_allowed_origins` 信任列表——见[管理 Origin 校验](docs/advanced.zh-CN.md#管理-origin--csrf-开关)。
-- **没有 Docker？** 准备依赖和 WebUI 后，直接 `uv run converter.py` 或 `python3 converter.py`，无需 `.env`；首次本地启动保存默认 key 并仅在终端显示一次——见[本地 Python 运行](docs/deployment.zh-CN.md#本地-python-运行)。
+- **经反代无法登录控制台？** 检查 `PUBLIC_ORIGIN`、身份提供方的 `/sso/callback` 地址、HTTPS 和管理员权限。见[部署指南](docs/deployment.zh-CN.md)。
+- **没有 Docker？** 构建 `web/`，安装锁定的 Python 依赖。使用相同 SSO 配置启动 `converter.py`。见[本地 Python 运行](docs/deployment.zh-CN.md#本地-python-运行)。
 - **数据在哪里？** 全部位于 `auth/`（Docker 中为 `/data/auth`）：凭证、设置与日志数据库——见[数据与备份](docs/webui.zh-CN.md#数据与备份)。
-- **镜像标签怎么选？** `latest` 跟随稳定版，`edge` 跟随 main，版本标签固定某一发行版——见[使用已发布镜像](docs/deployment.zh-CN.md#使用已发布镜像)。
+- **镜像标签怎么选？** `latest` 跟随稳定版，GitHub 的 `edge` 跟随 main，版本标签选择某一发行版——见[使用已发布镜像](docs/deployment.zh-CN.md#使用已发布镜像)。
 - **Responses 工具输出/参数被压缩或需要完全原样？** 设置 `responses_projection_mode`（默认 `balanced`，设 `passthrough` 可完全关闭投影）及 `responses_projection_max_bytes`（默认 `40000`，`0` 禁用单项裁剪）。balanced 裁剪保留头尾并显示原始 bytes、估算 tokens 与总行数，客户端地址不变——见 [Responses 投影](docs/clients.zh-CN.md#responses-投影)及[详细说明](docs/advanced.zh-CN.md#responses-投影)。
 
 ## 免责声明
@@ -94,6 +111,8 @@ docker compose up -d --no-build
 ## 开源协议
 
 [MIT](LICENSE)
+
+本项目二开自 [codebuddy2api](https://github.com/maiphucgiang/codebuddy2api)。保留上游许可证。控制台参照本地 cnb2api-panel 设计，以 React 实现。构建产物包含依赖许可证。
 
 ## 社区
 

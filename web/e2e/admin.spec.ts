@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+// Browser fixtures speak the gateway SSO contract (see e2e/sso.ts).
+import { GATEWAY_CSRF, mockSession } from "./sso";
 const model = {
   id: "mock-model",
   public_id: "mock-model",
@@ -73,6 +75,7 @@ const settings = {
 async function mockAPI(page: Page, authenticated = true) {
   const calls: { method: string; path: string; body: unknown }[] = [];
   let polls = 0;
+  const session = await mockSession(page, authenticated);
   await page.route("**/admin/**", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
@@ -81,19 +84,9 @@ async function mockAPI(page: Page, authenticated = true) {
     const body: unknown = req.postData() ? req.postDataJSON() : null;
     calls.push({ method, path: path + url.search, body });
     const send = (json: unknown, status = 200) => route.fulfill({ json, status });
-    if (path === "/admin/session") {
-      if (method === "DELETE") {
-        authenticated = false;
-        return send({ authenticated: false });
-      }
-      if (method === "POST") authenticated = true;
-      return authenticated
-        ? send({ authenticated: true, csrf_token: "mock-csrf" })
-        : send({ error: { message: "登录失效" } }, 401);
-    }
-    if (!authenticated) return send({ error: { message: "未认证" } }, 401);
+    if (!session.authenticated) return send({ error: { message: "未认证" } }, 401);
     if (method !== "GET" || path.endsWith("/poll"))
-      expect(req.headers()["x-csrf-token"]).toBe("mock-csrf");
+      expect(req.headers()["x-csrf-token"]).toBe(GATEWAY_CSRF);
     if (path === "/admin/dashboard")
       return send({
         summary: { requests: 126, success_rate: 0.98, total_tokens: 45678, credit: 0 },
@@ -179,14 +172,22 @@ async function mockAPI(page: Page, authenticated = true) {
   });
   return { calls, getPolls: () => polls };
 }
-test("isolated dashboard, deep routes, model conflict and schema settings", async ({ page }) => {
+test("model conflict surfaces as a retriable mutation error", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const mock = await mockAPI(page);
-  await page.goto("/dashboard");
+  await mockAPI(page);
+  await page.goto("/dashboard/");
   await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
   await expect(page.getByText("45,678", { exact: true }).first()).toBeVisible();
-  await page.screenshot({ path: "test-results/dashboard-desktop.png", fullPage: true });
+  await expect(page.locator("aside")).toHaveCSS("width", "180px");
+  const sidebarBounds = await page.locator("aside").boundingBox();
+  const headingBounds = await page.getByRole("heading", { name: "运行概览" }).boundingBox();
+  expect(sidebarBounds!.x + sidebarBounds!.width).toBeLessThan(headingBounds!.x);
+  await page.screenshot({
+    path: "test-results/dashboard-desktop.png",
+    fullPage: true,
+    animations: "disabled",
+  });
   await page.getByRole("link", { name: "模型路由" }).click();
   await page.getByRole("button", { name: "编辑规则" }).click();
   await page.getByLabel("对外 ID").fill("my-alias");
@@ -194,13 +195,43 @@ test("isolated dashboard, deep routes, model conflict and schema settings", asyn
   await expect(page.getByRole("heading", { name: "路由预览" })).toBeVisible();
   await page.getByRole("button", { name: "保存规则" }).click();
   await expect(page.getByRole("alert")).toContainText("保存冲突");
-  await page.screenshot({ path: "test-results/model-drawer.png", fullPage: true });
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.getByRole("link", { name: "系统设置" }).click();
+  expect(errors).toEqual([]);
+});
+
+test("locked settings stay read-only behind their own tab", async ({ page }) => {
+  const mock = await mockAPI(page);
+  await page.goto("/dashboard/settings");
   // Externally locked items live behind their own tab now.
   await page.getByRole("tab", { name: /外部锁定/ }).click();
   await expect(page.getByText("外部锁定", { exact: true })).toBeVisible();
+  // Locked rows expose no editable control: the value is shown and editing is deferred.
+  await expect(page.getByText("监听端口", { exact: true })).toBeVisible();
+  await expect(page.getByText("请在启动配置中修改。")).toBeVisible();
+  await expect(page.locator("input, select")).toHaveCount(0);
+  await page.getByRole("tab", { name: /可修改/ }).click();
+  await expect(page.getByLabel("审计明细保留天数")).toBeEnabled();
+  await expect(page.getByText("外部锁定", { exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/settings-locked-mobile.png", fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(mock.calls.every((call) => call.method === "GET")).toBe(true);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("deep dashboard routes, settings mutations and mobile containment", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const mock = await mockAPI(page);
+  await page.goto("/dashboard/");
+  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
+  await expect(page.getByText("45,678", { exact: true }).first()).toBeVisible();
+  await page.screenshot({ path: "test-results/dashboard-desktop.png", fullPage: true });
+  await page.getByRole("link", { name: "模型路由" }).click();
+  await expect(page.getByRole("button", { name: "新增模型" })).toBeVisible();
+  await page.getByRole("link", { name: "系统设置" }).click();
+  await page.getByRole("link", { name: "系统设置" }).click();
   await page.getByRole("tab", { name: /可修改/ }).click();
   await page.getByLabel("审计明细保留天数").fill("60");
   await page.getByRole("button", { name: "保存更改" }).click();
@@ -210,7 +241,7 @@ test("isolated dashboard, deep routes, model conflict and schema settings", asyn
     )
     .toBe(true);
   await page.goto("/dashboard/no-such-page");
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/dashboard\/$/);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: "test-results/dashboard-mobile.png", fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -313,7 +344,9 @@ test("international OAuth choices send distinct sites and show the selected offi
     await expect(select).toBeEnabled();
   }
 });
-test("log tabs, cursor, details and guarded destructive clear", async ({ page }) => {
+test("log tabs, cursor, details and guarded destructive clear (no browser admin secret)", async ({
+  page,
+}) => {
   const mock = await mockAPI(page);
   await page.goto("/dashboard/logs");
   await page.getByRole("button", { name: "查看详情" }).click();
@@ -327,33 +360,44 @@ test("log tabs, cursor, details and guarded destructive clear", async ({ page })
   await page.getByRole("button", { name: "清理日志" }).click();
   await page.getByLabel("清理范围").selectOption("all");
   await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeDisabled();
+  // The gateway re-authenticates server-side; the browser never asks for the secret.
+  expect(await page.getByLabel("当前 API key").count()).toBe(0);
   await page.getByLabel("输入“清空全部日志与统计”").fill("清空全部日志与统计");
-  await page.getByLabel("当前 API key").fill("mock-revalidation-key");
+  await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeEnabled();
   await page.getByRole("button", { name: "确认不可撤销的清理" }).click();
   await expect.poll(() => mock.calls.some((call) => call.path === "/admin/logs/clear")).toBe(true);
+  const clear = mock.calls.find((call) => call.path === "/admin/logs/clear")!;
+  expect(clear.method).toBe("POST");
+  expect(clear.body).toEqual({ scope: "all", confirmation: "清空全部日志与统计" });
+  expect(JSON.stringify(clear.body)).not.toContain("api_key");
 });
-test("anonymous login never persists API key and API failure is not zero-data success", async ({
+test("anonymous gateway session never persists a secret and API failure is not zero-data success", async ({
   page,
 }) => {
-  await mockAPI(page, false);
+  const session = await mockSession(page, false);
   await page.goto("/dashboard/settings");
   await expect(page).toHaveURL(/\/dashboard\/login$/);
-  await expect(page.getByText("不会在浏览器中保存 API key。", { exact: true })).toHaveCount(0);
-  await expect(page.locator("p")).toHaveCount(0);
-  await page.getByLabel("API key", { exact: true }).fill("mock-login-key");
-  await page.getByRole("button", { name: "进入工作台" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  // Only the unified-identity entry point remains; no key is stored in the browser.
+  expect(await page.getByText("不会在浏览器中保存", { exact: false }).count()).toBe(0);
+  expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
+  await expect(page.getByRole("link", { name: /统一身份登录/ })).toHaveAttribute(
+    "href",
+    "/sso/login?return_to=/dashboard/",
+  );
   expect(
-    await page.evaluate(() => ({
-      local: localStorage.length,
-      session: sessionStorage.length,
-      url: location.href,
-    })),
-  ).toEqual({ local: 0, session: 0, url: "http://127.0.0.1:5174/dashboard" });
+    await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })),
+  ).toEqual({ local: 0, session: 0 });
+  expect(session.calls.every((call) => call.path === "/sso/session")).toBe(true);
+
+  // Signed-in failure path: an upstream error must not render as empty success.
+  session.sets(true);
   await page.route("**/admin/dashboard?**", (route) =>
     route.fulfill({ status: 503, json: { error: { message: "隔离测试：存储不可用" } } }),
   );
+  await page.goto("/dashboard/");
+  await expect(page.getByRole("alert")).toContainText("隔离测试：存储不可用");
   await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.waitForTimeout(300);
   await expect(page.getByRole("alert")).toContainText("隔离测试：存储不可用");
   await expect(page.getByText("请求总量", { exact: true })).toHaveCount(0);
 });

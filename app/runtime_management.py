@@ -13,7 +13,10 @@ from .gateway_management import Management, install_pages
 from .inference_auth import InferenceAuthMiddleware
 from .model_policy import PolicyScopeMiddleware
 from .observability import AuditMiddleware
+from .request_target import install_request_target_guard
 from .settings import SCHEMA, apply_persisted_settings
+from .sso_auth import install_sso
+from .sso_config import load as load_sso_config
 
 
 class UnavailableAudit:
@@ -61,6 +64,9 @@ class UnavailableAudit:
 
 def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
     config = gateway.CONFIG
+    # Resolve SSO before any store is opened: a misconfigured SSO deployment must
+    # abort startup instead of serving a weaker authentication surface.
+    config["sso"] = load_sso_config()
     config["auto_accept_buddy"] = buddy.auto_accept_from_env(os.environ)
     config["auto_accept_buddy_source"] = "environment" if "CODEBUDDY2API_AUTO_ACCEPT_BUDDY" in os.environ else "default"
     root = gateway.managed_auth_dir()
@@ -108,7 +114,9 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
 
 def install(gateway):
     config, app = gateway.CONFIG, gateway.app
-    install_admin(app, config, config["management"])
+    sso = config.get("sso")
+    service = install_sso(app, config) if sso is not None and sso.enabled else None
+    install_admin(app, config, config["management"], sso=service)
     app.add_middleware(AuditMiddleware, config=config)
     app.add_middleware(PolicyScopeMiddleware)
     from .inbound_limits import ConcurrencyLimitMiddleware, InboundBodyLimitMiddleware
@@ -118,7 +126,11 @@ def install(gateway):
     app.add_middleware(InferenceAuthMiddleware, config=config)
     from .request_context import RequestContextMiddleware
     app.add_middleware(RequestContextMiddleware, config=config)
+    if service is not None:
+        # Outermost guard: classify the raw request target before any route or auth work.
+        install_request_target_guard(app)
     install_pages(app, Path(gateway.__file__).resolve().parent / "web" / "dist")
+    return service
 
 
 def close(config):

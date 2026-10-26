@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { AppRoutes, Guard } from "./App";
@@ -94,28 +94,75 @@ describe("model rules and route preview", () => {
   });
 });
 describe("destructive warnings", () => {
-  it("blocks full clear until exact phrase and current key, and clears key after submit", async () => {
-    const post = vi.spyOn(api, "post").mockResolvedValue({ data: { ok: true } });
-    render(<ClearLogs onClose={vi.fn()} onDone={vi.fn()} />);
+  it("requires the exact full-clear phrase and sends no administrative secret", async () => {
+    let resolve!: (value: { data: { ok: boolean } }) => void;
+    const post = vi.spyOn(api, "post").mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const close = vi.fn();
+    const done = vi.fn();
+    render(<ClearLogs onClose={close} onDone={done} />);
     fireEvent.change(screen.getByLabelText("清理范围"), { target: { value: "all" } });
     const submit = screen.getByRole("button", { name: "确认不可撤销的清理" });
     expect(submit).toHaveProperty("disabled", true);
     expect(screen.getByText(/将永久删除全部请求明细/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText(`输入“${CLEAR_CONFIRMATION}”`), {
-      target: { value: CLEAR_CONFIRMATION },
+    expect(screen.queryByLabelText("当前 API key")).toBeNull();
+    const confirmation = screen.getByLabelText(`输入“${CLEAR_CONFIRMATION}”`);
+    fireEvent.change(confirmation, {
+      target: { value: `${CLEAR_CONFIRMATION} ` },
     });
     expect(submit).toHaveProperty("disabled", true);
-    fireEvent.change(screen.getByLabelText("当前 API key"), { target: { value: "test-only-key" } });
+    fireEvent.submit(submit.closest("form")!);
+    expect(post).not.toHaveBeenCalled();
+    fireEvent.change(confirmation, { target: { value: CLEAR_CONFIRMATION } });
     expect(submit).toHaveProperty("disabled", false);
     fireEvent.click(submit);
-    await waitFor(() =>
-      expect(post).toHaveBeenCalledWith("/logs/clear", {
-        scope: "all",
-        confirmation: CLEAR_CONFIRMATION,
-        api_key: "test-only-key",
-      }),
-    );
-    expect(screen.getByLabelText("当前 API key")).toHaveProperty("value", "");
+    expect(post).toHaveBeenCalledExactlyOnceWith("/logs/clear", {
+      scope: "all",
+      confirmation: CLEAR_CONFIRMATION,
+    });
+    expect(screen.getByRole("button", { name: "正在清理…" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "关闭抽屉" })).toHaveProperty("disabled", true);
+    expect(screen.getByLabelText("清理范围")).toHaveProperty("disabled", true);
+    expect(confirmation).toHaveProperty("disabled", true);
+    fireEvent.submit(submit.closest("form")!);
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+    expect(post).toHaveBeenCalledOnce();
+    expect(done).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => resolve({ data: { ok: true } }));
+    expect(done).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  });
+  it("keeps a rejected full clear open with its confirmation and supports retry", async () => {
+    const post = vi
+      .spyOn(api, "post")
+      .mockRejectedValueOnce(new Error("storage unavailable"))
+      .mockResolvedValueOnce({ data: { ok: true } });
+    const close = vi.fn();
+    const done = vi.fn();
+    render(<ClearLogs onClose={close} onDone={done} />);
+    fireEvent.change(screen.getByLabelText("清理范围"), { target: { value: "all" } });
+    const confirmation = screen.getByLabelText(`输入“${CLEAR_CONFIRMATION}”`);
+    fireEvent.change(confirmation, { target: { value: CLEAR_CONFIRMATION } });
+    fireEvent.click(screen.getByRole("button", { name: "确认不可撤销的清理" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "storage unavailable");
+    const retry = screen.getByRole("button", { name: "确认不可撤销的清理" });
+    expect(retry).toHaveProperty("disabled", false);
+    expect(confirmation).toHaveProperty("value", CLEAR_CONFIRMATION);
+    expect(done).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    fireEvent.click(retry);
+    await waitFor(() => expect(done).toHaveBeenCalledOnce());
+    expect(close).toHaveBeenCalledOnce();
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenLastCalledWith("/logs/clear", {
+      scope: "all",
+      confirmation: CLEAR_CONFIRMATION,
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
   it("ordinary clear preserves statistics and sends no key", async () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { ok: true } });
@@ -166,6 +213,6 @@ describe("dashboard-prefixed routing", () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText("/dashboard/login")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "登录管理控制台" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "登录 CodeBuddy2Api" })).toBeTruthy();
   });
 });

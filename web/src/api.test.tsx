@@ -14,13 +14,16 @@ import {
   metric,
   modelResponse,
   object,
+  sso,
   useResource,
   useSession,
 } from "./api";
 const adapter = api.defaults.adapter;
+const ssoAdapter = sso.defaults.adapter;
 afterEach(() => {
   api.defaults.adapter = adapter;
-  useSession.setState({ status: "checking", csrf: null, error: null });
+  sso.defaults.adapter = ssoAdapter;
+  useSession.setState({ status: "checking", csrf: null, user: null, error: null });
 });
 function response(data: unknown, config: InternalAxiosRequestConfig) {
   return { data, status: 200, statusText: "OK", headers: new AxiosHeaders(), config };
@@ -44,34 +47,38 @@ describe("API and session state", () => {
   });
   it("reads CSRF from session and includes credentials / CSRF in OAuth poll", async () => {
     const seen: InternalAxiosRequestConfig[] = [];
-    api.defaults.adapter = ((config) => {
+    sso.defaults.adapter = ((config) => {
       seen.push(config);
       return Promise.resolve(
         response(
-          config.url === "/session"
-            ? { authenticated: true, csrf_token: "mock-csrf" }
-            : { done: false },
+          { authenticated: true, csrf_token: "mock-csrf", user: { sub: "admin-1", role: "admin" } },
           config,
         ),
       );
     }) satisfies AxiosAdapter;
-    await establishSession("isolated-test-key");
+    api.defaults.adapter = (config) => {
+      seen.push(config);
+      return Promise.resolve(response({ done: false }, config));
+    };
+    await establishSession();
     await api.get("/oauth/poll", { params: { login_id: "mock-login" } });
     expect(seen[0].withCredentials).toBe(true);
+    expect(seen[0].baseURL).toBe("/sso");
+    expect(seen[0].method).toBe("get");
+    expect(seen[0].data).toBeUndefined();
     expect(seen[1].headers.get("X-CSRF-Token")).toBe("mock-csrf");
     expect(useSession.getState().csrf).toBe("mock-csrf");
-    expect(JSON.stringify(useSession.getState())).not.toContain("isolated-test-key");
     expect(localStorage.length).toBe(0);
   });
   it("reports session schema errors without authenticating", async () => {
-    api.defaults.adapter = (config) => Promise.resolve(response({ authenticated: true }, config));
+    sso.defaults.adapter = (config) => Promise.resolve(response({ authenticated: true }, config));
     await establishSession();
     expect(useSession.getState().status).toBe("error");
     expect(useSession.getState().csrf).toBeNull();
   });
   it("turns a 401 into anonymous and drops csrf", async () => {
     useSession.setState({ status: "authenticated", csrf: "old" });
-    api.defaults.adapter = (config) =>
+    sso.defaults.adapter = (config) =>
       Promise.reject(
         new AxiosError("unauthorized", "ERR_BAD_REQUEST", config, undefined, {
           ...response({}, config),

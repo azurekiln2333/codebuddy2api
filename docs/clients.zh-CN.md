@@ -11,7 +11,7 @@
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
 
-国内/国际、CLI/WorkBuddy 账号共用这些地址；后端自动选路，无需 `/cn` 或 `/intl` 前缀。客户端使用 WebUI 登录所用的 key，而非管理 Cookie。
+国内/国际、CLI/WorkBuddy 账号共用这些地址；后端自动选路，无需 `/cn` 或 `/intl` 前缀。客户端使用推理 API key（`CODEBUDDY2API_KEY`），与控制台 OIDC 登录及会话 Cookie 独立。
 
 列出可用模型：
 

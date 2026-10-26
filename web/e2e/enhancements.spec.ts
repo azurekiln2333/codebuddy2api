@@ -1,8 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import { GATEWAY_CSRF, mockSession } from "./sso";
 
 test.use({ hasTouch: true });
 async function fixture(page: Page) {
   const calls: string[] = [];
+  const session = await mockSession(page);
   const credentials = [
     {
       id: "one",
@@ -15,8 +17,6 @@ async function fixture(page: Page) {
   ];
   await page.route("**/admin/**", (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path === "/admin/session")
-      return route.fulfill({ json: { authenticated: true, csrf_token: "fixture-only" } });
     if (path === "/admin/credentials") return route.fulfill({ json: { credentials } });
     if (path === "/admin/dashboard")
       return route.fulfill({
@@ -37,7 +37,7 @@ async function fixture(page: Page) {
         },
       });
     if (route.request().method() === "POST") {
-      expect(route.request().headers()["x-csrf-token"]).toBe("fixture-only");
+      expect(route.request().headers()["x-csrf-token"]).toBe(GATEWAY_CSRF);
       calls.push(path);
       return route.fulfill({
         json: { results: [{ id: "one", name: "one.info", ok: true, message: "隔离测试操作成功" }] },
@@ -48,7 +48,7 @@ async function fixture(page: Page) {
       json: { error: { message: "Unmocked fixture endpoint" } },
     });
   });
-  return calls;
+  return { calls, session };
 }
 
 test("appearance persists, follows the system, and animates modal exit", async ({ page }) => {
@@ -56,23 +56,26 @@ test("appearance persists, follows the system, and animates modal exit", async (
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("/dashboard");
+  await page.goto("/dashboard/");
   const open = page.getByRole("button", { name: "外观设置" });
   await open.click();
   const sheet = page.getByRole("dialog").locator("section");
   await expect(sheet).toHaveCSS("animation-name", /drawerIn/);
-  await page.getByLabel("雾蓝").check();
+  // The CodeBuddy2Api theme is fixed to blue: no palette picker is offered anymore.
   await expect(page.locator("html")).toHaveAttribute("data-palette", "blue");
+  await expect(page.getByLabel("浅色配色")).toHaveCount(0);
+  await expect(page.getByText("界面采用 CodeBuddy2Api 蓝色。", { exact: false })).toBeVisible();
   await page.getByLabel("深色", { exact: true }).check();
   const dark = await page
     .locator("body")
     .evaluate((node) => getComputedStyle(node).backgroundColor);
-  await expect(page.getByLabel("青叶")).toBeDisabled();
   await page.screenshot({ path: "test-results/appearance-dark.png", fullPage: true });
   await page.getByLabel("浅色", { exact: true }).check();
-  await page.getByLabel("蔷薇").check();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.getByLabel("深色", { exact: true }).check();
   await expect(page.locator("body")).toHaveCSS("background-color", dark);
+  // The fixed blue palette survives a dark/light round trip without a picker.
+  await expect(page.locator("html")).toHaveAttribute("data-palette", "blue");
   await page.getByLabel("跟随系统").check();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.emulateMedia({ colorScheme: "dark" });
@@ -89,7 +92,7 @@ test("appearance persists, follows the system, and animates modal exit", async (
   await expect(open).toBeFocused();
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.locator("html")).toHaveAttribute("data-palette", "rose");
+  await expect(page.locator("html")).toHaveAttribute("data-palette", "blue");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await open.click();
   await expect(sheet).toHaveCSS("animation-name", "none");
@@ -100,7 +103,7 @@ test("appearance persists, follows the system, and animates modal exit", async (
 
 test("trend has hover, keyboard and touch values without mobile overflow", async ({ page }) => {
   await fixture(page);
-  await page.goto("/dashboard");
+  await page.goto("/dashboard/");
   const chart = page.getByRole("img", { name: "按小时用量趋势" });
   let box = (await chart.boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.97, box.y + box.height * 0.5);
@@ -120,7 +123,7 @@ test("trend has hover, keyboard and touch values without mobile overflow", async
 });
 
 test("credential refresh, checkin, sync and batch buttons stay separate", async ({ page }) => {
-  const calls = await fixture(page);
+  const calls = (await fixture(page)).calls;
   await page.goto("/dashboard/credentials");
   for (const label of [
     "menu:刷新凭证 one.info",

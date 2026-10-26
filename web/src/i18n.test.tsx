@@ -28,20 +28,19 @@ function Probe() {
 }
 
 describe("i18n", () => {
-  it("follows the browser language by default and persists explicit choices", () => {
+  it("defaults to Chinese and persists explicit language choices", () => {
     render(<Probe />);
-    // jsdom reports en-US, so the system preference resolves to English.
-    expect(screen.getByTestId("probe").textContent).toBe("Overview");
+    expect(screen.getByTestId("probe").textContent).toBe("概览");
     act(() => chooseLanguage("zh"));
     expect(screen.getByTestId("probe").textContent).toBe("概览");
     expect(screen.getByTestId("interp").textContent).toBe("尝试 3");
-    expect(localStorage.getItem("codebuddy2api.lang")).toBe("zh");
+    expect(localStorage.getItem("azurekiln.lang")).toBe("zh");
     act(() => chooseLanguage("en"));
     expect(screen.getByTestId("probe").textContent).toBe("Overview");
-    expect(localStorage.getItem("codebuddy2api.lang")).toBe("en");
+    expect(localStorage.getItem("azurekiln.lang")).toBe("en");
     act(() => chooseLanguage("system"));
     expect(screen.getByTestId("probe").textContent).toBe("Overview");
-    expect(localStorage.getItem("codebuddy2api.lang")).toBe("system");
+    expect(localStorage.getItem("azurekiln.lang")).toBe("system");
   });
   it("falls back to the key itself when an entry is missing", () => {
     expect(translate("missing.key.entirely")).toBe("missing.key.entirely");
@@ -54,13 +53,16 @@ describe("i18n", () => {
         <ProbeText />
       </LanguageProvider>,
     );
-    expect(screen.getByTestId("probe").textContent).toBe("Overview");
+    expect(screen.getByTestId("probe").textContent).toBe("概览");
     fireEvent.click(screen.getByRole("button", { name: "外观设置" }));
+    // Select another language before selecting the already-active default.
+    fireEvent.click(document.querySelector('input[name="ui-language"][value="en"]')!);
+    expect(screen.getByTestId("probe").textContent).toBe("Overview");
     fireEvent.click(document.querySelector('input[name="ui-language"][value="zh"]')!);
-    expect(localStorage.getItem("codebuddy2api.lang")).toBe("zh");
+    expect(localStorage.getItem("azurekiln.lang")).toBe("zh");
     expect(screen.getByTestId("probe").textContent).toBe("概览");
     fireEvent.click(document.querySelector('input[name="ui-language"][value="system"]')!);
-    expect(localStorage.getItem("codebuddy2api.lang")).toBe("system");
+    expect(localStorage.getItem("azurekiln.lang")).toBe("system");
     expect(screen.getByTestId("probe").textContent).toBe("Overview");
   });
 });

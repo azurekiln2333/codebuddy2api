@@ -248,23 +248,58 @@ class Management:
 def install_pages(app, directory):
     """Fallback only applies to pages; management/client APIs never serve HTML."""
     root = Path(directory).resolve()
-    pages = {"", "models", "credentials", "logs", "settings", "login"}
+    pages = {"", "models", "credentials", "logs", "settings", "storage", "login"}
     assets = StaticFiles(directory=root / "assets", check_dir=False)
+    licenses = StaticFiles(directory=root / "licenses", check_dir=False)
+
+    async def contained_static(mount, asset_path, request, cache):
+        """Serve a contained static file; never a directory index or the shell."""
+        if "\x00" in asset_path or "\\" in asset_path or ".." in Path(asset_path).parts:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if asset_path.endswith("/") or not Path(asset_path).name:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        response = await mount.get_response(asset_path, request.scope)
+        response.headers["Cache-Control"] = cache
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.api_route("/dashboard/assets/{asset_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     async def dashboard_asset(asset_path: str, request: Request):
-        if "\x00" in asset_path:
+        return await contained_static(assets, asset_path, request, "public, max-age=31536000, immutable")
+
+    @app.api_route("/dashboard/licenses/{asset_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+    async def dashboard_license(asset_path: str, request: Request):
+        # Third-party licence texts shipped with the replacement UI build.
+        return await contained_static(licenses, asset_path, request, "public, max-age=86400")
+
+    def root_document(name: str, media_type: str):
+        """Serve a build-root document verbatim; a missing file is a real 404."""
+        target = root / name
+        if not target.is_file():
             return JSONResponse({"detail": "Not Found"}, status_code=404)
-        # Delegate containment to Starlette; assets may be built after startup.
-        response = await assets.get_response(asset_path, request.scope)
-        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
+        return FileResponse(target, media_type=media_type,
+                            headers={"Cache-Control": "public, max-age=86400",
+                                     "X-Content-Type-Options": "nosniff"})
+
+    # The replacement UI build emits these three files at the dist root, so they
+    # are part of the shipped artifact contract rather than an optional extra.
+    for name in ("LICENSE.upstream.txt", "THIRD_PARTY_NOTICES.txt", "THIRD_PARTY_LICENSES.txt"):
+        async def dashboard_document(name=name):
+            return root_document(name, "text/plain; charset=utf-8")
+        dashboard_document.__name__ = "dashboard_" + name.replace(".", "_").replace("-", "_")
+        app.add_api_route(f"/dashboard/{name}", dashboard_document,
+                          methods=["GET", "HEAD"], include_in_schema=False)
+
+    @app.api_route("/dashboard/THIRD_PARTY_NOTICES.md", methods=["GET", "HEAD"], include_in_schema=False)
+    def dashboard_notices():
+        # Kept for older builds that still emit the Markdown variant.
+        return root_document("THIRD_PARTY_NOTICES.md", "text/markdown; charset=utf-8")
 
     @app.api_route("/dashboard", methods=["GET", "HEAD"], include_in_schema=False)
     @app.api_route("/dashboard/{page:path}", methods=["GET", "HEAD"], include_in_schema=False)
     def dashboard_page(page=""):
-        if page == "assets" or page.startswith("assets/"):
+        if page.split("/", 1)[0] in ("assets", "licenses"):
+            # Static mounts never fall back to the shell or a page redirect.
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if page not in pages:
             if Path(page).suffix:
@@ -279,7 +314,8 @@ def install_pages(app, directory):
 
     @app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], include_in_schema=False)
     def page_fallback(path=""):
-        if (path.split("/", 1)[0] in {"v1", "admin", "health"} or Path(path).suffix
+        # Every API surface answers its own 404s; only unknown pages redirect.
+        if (path.split("/", 1)[0] in {"v1", "admin", "health", "sso"} or Path(path).suffix
                 or path.startswith(("cn/v1", "intl/v1"))):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         return RedirectResponse("/dashboard", status_code=302)

@@ -30,4 +30,8 @@ COPY --from=frontend /web/dist/ ./web/dist/
 EXPOSE 8787
 # Listen on container interfaces; host port mapping controls external access.
 ENV CODEBUDDY2API_ALLOW_OPEN_NOAUTH=true
+# Liveness probe for Compose and the update service: /health only reports that the application accepts requests.
+# It does not assert account or upstream readiness, so it must never be used to claim an automatic rollback.
+# Kept on one line on purpose: deployment tests parse each Dockerfile line on its own.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD python3 -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=4).status == 200 else 1)"
 CMD ["python3", "converter.py", "--host", "0.0.0.0", "--port", "8787", "--skip-check"]

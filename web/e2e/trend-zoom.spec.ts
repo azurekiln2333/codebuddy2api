@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockSession } from "./sso";
 
 // Regression: zooming a daily series into a narrow window swaps in hourly
 // buckets; the geometry helpers must follow the swapped rows or the chart
@@ -24,10 +25,9 @@ test("trend zoom swaps to hourly granularity without crashing", async ({ page })
     total_tokens: 100,
     credit: 0.1,
   }));
+  await mockSession(page);
   await page.route("**/admin/**", (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname === "/admin/session")
-      return route.fulfill({ json: { authenticated: true, csrf_token: "x" } });
     if (url.pathname === "/admin/dashboard") {
       const hourly = url.searchParams.get("granularity") === "hour";
       return route.fulfill({
@@ -44,7 +44,7 @@ test("trend zoom swaps to hourly granularity without crashing", async ({ page })
     }
     return route.fulfill({ json: {} });
   });
-  await page.goto("/dashboard");
+  await page.goto("/dashboard/");
   const chart = page.getByRole("img", { name: "按日用量趋势" });
   await expect(chart).toBeVisible();
   const box = (await chart.boundingBox())!;

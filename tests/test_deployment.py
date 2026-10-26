@@ -34,7 +34,10 @@ def docker_sources():
     files = set()
     runtime = False
     for line in (ROOT / "Dockerfile").read_text().splitlines():
-        parts = shlex.split(line)
+        try:
+            parts = shlex.split(line)
+        except ValueError:  # Backslash line continuations are not a directive of their own.
+            continue
         if parts and parts[0] == "FROM":
             runtime = parts[-1] == "runtime" or parts[1].startswith("python:")
         if not runtime or not parts or parts[0] != "COPY" or any(p.startswith("--from=") for p in parts):
@@ -43,9 +46,11 @@ def docker_sources():
             path = ROOT / source
             if source.endswith("/"):
                 for pattern in ("*.py", "adapters/*.py"):
-                    files.update(str(item.relative_to(ROOT)) for item in path.glob(pattern))
+                    # Normalize to POSIX form so the allowlist comparisons and assertions
+                    # behave identically on Windows and Linux checkouts.
+                    files.update(item.relative_to(ROOT).as_posix() for item in path.glob(pattern))
             elif path.is_dir():
-                files.update(str(item.relative_to(ROOT)) for item in path.rglob("*.py"))
+                files.update(item.relative_to(ROOT).as_posix() for item in path.rglob("*.py"))
             else:
                 files.add(source)
     return files
@@ -66,6 +71,18 @@ def _local_dependency(source: str, module: str) -> str | None:
     return str(package) if (ROOT / str(package)).is_file() else None
 
 
+def _continuation_lines(lines, start):
+    """Join one directive with its backslash-continued lines."""
+    parts = []
+    index = start
+    while index < len(lines):
+        parts.append(lines[index].strip() if index > start else lines[index])
+        if not lines[index].rstrip().endswith("\\"):
+            break
+        index += 1
+    return parts
+
+
 class DeploymentTests(unittest.TestCase):
     def test_env_template_matches_runtime_defaults_and_contains_no_shared_key(self):
         values = {}
@@ -78,7 +95,12 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(values["CODEBUDDY2API_" + env_key], str(RUNTIME_DEFAULTS[config_key]))
         self.assertEqual(values["CODEBUDDY2API_KEY"], "")
         self.assertEqual(values["CODEBUDDY2API_BIND"], "127.0.0.1")
-        self.assertEqual(values["CODEBUDDY2API_IMAGE"], "codebuddy2api:local")
+        # The template must point at a pullable fork image, never the upstream author.
+        self.assertRegex(values["CODEBUDDY2API_IMAGE"],
+                         r"^[a-z0-9.-]+/[a-z0-9_.-]+/codebuddy2api:(latest|v?\d+\.\d+\.\d+)$")
+        self.assertNotIn("maiphucgiang", values["CODEBUDDY2API_IMAGE"])
+        self.assertEqual(values["CODEBUDDY2API_SSO_ENABLED"], "true")
+        self.assertEqual(values["ALLOW_INSECURE_LOCALHOST"], "false")
         self.assertNotIn("CODEBUDDY2API_AUTO_TRIAL", values)
         self.assertNotIn("CODEBUDDY2API_AUTO_TRIAL", (ROOT / "docker-compose.yml").read_text())
         self.assertEqual(values["CODEBUDDY2API_ADMIN_CSRF"], str(RUNTIME_DEFAULTS["admin_csrf"]).lower())
@@ -131,6 +153,9 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn(".env", files)
         self.assertNotIn(".env.example", files)
 
+    @unittest.skipIf(sys.platform == "win32",
+                     "importing asyncio initializes Winsock on Windows, which this test's "
+                     "no-network audit hook forbids; the isolation check runs on Linux CI")
     def test_docker_runtime_file_set_imports_in_isolation(self):
         with tempfile.TemporaryDirectory() as directory:
             for filename in docker_sources():
@@ -179,7 +204,6 @@ class DeploymentTests(unittest.TestCase):
 
     def test_compose_has_old_syntax_fallbacks_without_required_env_file(self):
         text = (ROOT / "docker-compose.yml").read_text()
-        self.assertIn('version: "3.8"', text)
         self.assertNotIn("env_file:", text)
         self.assertNotIn("required:", text)
         for name, fallback in (("MAX_IMAGES", "16"), ("IMAGE_POLICY", "truncate"),
@@ -190,7 +214,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertIn("cp .env.example .env", doc)
             self.assertIn("docker compose pull", doc)
             self.assertIn("docker compose up -d --no-build", doc)
-            self.assertIn("ghcr.io/maiphucgiang/codebuddy2api:latest", doc)
+            self.assertIn("CODEBUDDY2API_IMAGE", doc)
             self.assertNotIn("docker compose build", doc)
             self.assertNotRegex(doc, r"\bdocker-compose\s")
 
@@ -198,7 +222,8 @@ class DeploymentTests(unittest.TestCase):
         for suffix in ("", ".zh-CN"):
             with self.subTest(language=suffix):
                 readme = (ROOT / f"README{suffix}.md").read_text()
-                self.assertIn("http://127.0.0.1:8787/dashboard", readme)
+                # The console entry point is the configured public origin, not a fixed loopback URL.
+                self.assertIn("/dashboard", readme)
                 self.assertIn("CODEBUDDY2API_KEY", readme)
                 for guide in ("webui", "deployment", "clients", "advanced"):
                     target = f"docs/{guide}{suffix}.md"
@@ -225,6 +250,103 @@ class DeploymentTests(unittest.TestCase):
                     self.assertIn("https://" + host, advanced)
                 self.assertIn("default-model", advanced)
                 self.assertIn("账号/租户" if suffix else "account/tenant", advanced)
+
+    def test_default_compose_pulls_the_application_image_and_never_builds(self):
+        """The default file must stay pull-only so `up` cannot compile a stale checkout."""
+        text = (ROOT / "docker-compose.yml").read_text()
+        self.assertNotRegex(text, r"(?m)^\s+build:")
+        self.assertNotRegex(text, r"(?m)^version:")
+        self.assertRegex(text, r"(?m)^ {4}image: \$\{CODEBUDDY2API_IMAGE:-[^}]+\}$")
+        self.assertNotIn("maiphucgiang", text)
+        self.assertIn("${CODEBUDDY2API_BIND:-127.0.0.1}:${CODEBUDDY2API_PORT:-8787}:8787", text)
+        self.assertIn("${CODEBUDDY2API_AUTH_PATH:-./auth}:/data/auth", text)
+        self.assertRegex(text, r"(?m)^ {4}init: true$")
+        self.assertRegex(text, r"(?m)^ {4}restart: unless-stopped$")
+        self.assertRegex(text, r"(?m)^ {8}max-size: 10m$")
+        self.assertRegex(text, r"(?m)^ {8}max-file: \"3\"$")
+
+    def test_local_build_override_exists_and_opts_out_of_automatic_updates(self):
+        text = (ROOT / "docker-compose.build.yaml").read_text()
+        self.assertRegex(text, r"(?m)^ {4}pull_policy: build$")
+        self.assertRegex(text, r"(?m)^ {4}build:$")
+        self.assertRegex(text, r"(?m)^ {6}context: \.$")
+        self.assertRegex(text, r"(?m)^ {6}dockerfile: Dockerfile$")
+        # A locally built image changes only by rebuilding, so the updater must not replace it.
+        self.assertIn('com.centurylinklabs.watchtower.enable: "false"', text)
+
+    def test_update_service_is_profile_scoped_and_never_updates_itself(self):
+        compose = (ROOT / "docker-compose.yml").read_text()
+        self.assertIn("profiles: [auto-update]", compose)
+        # Maintained fork of the archived project, pinned instead of `latest`.
+        self.assertIn("image: nickfedor/watchtower:1.23.2", compose)
+        for line in compose.splitlines():
+            if line.strip().startswith("image:") and "CODEBUDDY2API_IMAGE" not in line:
+                self.assertNotIn("containrrr", line)
+                self.assertNotIn(":latest", line)
+        for name in ("WATCHTOWER_LABEL_ENABLE", "WATCHTOWER_SCOPE", "WATCHTOWER_POLL_INTERVAL", "WATCHTOWER_CLEANUP"):
+            self.assertIn(name + ":", compose)
+        # Both services share one per-deployment scope; only the application opts in.
+        scope = 'com.centurylinklabs.watchtower.scope: "${COMPOSE_PROJECT_NAME:-codebuddy2api}"'
+        self.assertEqual(compose.count(scope), 2)
+        self.assertEqual(compose.count('com.centurylinklabs.watchtower.enable: "true"'), 1)
+        self.assertEqual(compose.count('com.centurylinklabs.watchtower.enable: "false"'), 1)
+        self.assertIn("WATCHTOWER_SCOPE: \"${COMPOSE_PROJECT_NAME:-codebuddy2api}\"", compose)
+
+    def test_image_health_check_probes_health_with_the_standard_library(self):
+        text = (ROOT / "Dockerfile").read_text()
+        lines = text.splitlines()
+        start = next(index for index, line in enumerate(lines) if line.startswith("HEALTHCHECK"))
+        probe = " ".join(_continuation_lines(lines, start))
+        self.assertIn("/health", probe)
+        self.assertIn("urllib.request", probe)
+        self.assertIn("--start-period=", probe)
+        # The probe must not add a runtime package such as curl.
+        self.assertNotIn("curl", text)
+        self.assertNotIn("wget", text)
+
+    def test_compose_forwards_the_console_login_contract(self):
+        compose = (ROOT / "docker-compose.yml").read_text()
+        self.assertIn("CODEBUDDY2API_SSO_ENABLED: ${CODEBUDDY2API_SSO_ENABLED:-true}", compose)
+        for name in ("PUBLIC_ORIGIN", "OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"):
+            self.assertIn(name + ": ${" + name + ":-}", compose)
+        self.assertIn("OIDC_REFRESH: ${OIDC_REFRESH:-false}", compose)
+        self.assertIn("ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}", compose)
+        example = (ROOT / ".env.example").read_text()
+        for name in ("CODEBUDDY2API_SSO_ENABLED", "PUBLIC_ORIGIN", "OIDC_ISSUER", "OIDC_CLIENT_ID",
+                     "OIDC_CLIENT_SECRET", "OIDC_REFRESH", "ALLOW_INSECURE_LOCALHOST",
+                     "WATCHTOWER_POLL_INTERVAL"):
+            self.assertRegex(example, rf"(?m)^#? ?{name}=")
+
+    def test_deployment_docs_cover_pull_update_disable_and_rollback(self):
+        for suffix in ("", ".zh-CN"):
+            with self.subTest(language=suffix):
+                doc = (ROOT / f"docs/deployment{suffix}.md").read_text()
+                self.assertIn("docker compose pull", doc)
+                self.assertIn("docker compose up -d --no-build", doc)
+                self.assertIn("docker-compose.build.yaml", doc)
+                self.assertIn("--profile auto-update", doc)
+                self.assertIn("WATCHTOWER_POLL_INTERVAL", doc)
+                self.assertIn("docker login", doc)
+                self.assertIn("CODEBUDDY2API_IMAGE", doc)
+                self.assertIn("CODEBUDDY2API_SSO_ENABLED", doc)
+                self.assertIn("OIDC_CLIENT_SECRET", doc)
+                self.assertIn("PUBLIC_ORIGIN", doc)
+                # A downgrade is only documented safely with a matching data backup.
+                self.assertIn("auth/", doc)
+                self.assertNotIn("maiphucgiang", doc)
+
+    def test_reverse_proxy_example_keeps_streaming_and_hides_callback_query(self):
+        # Lives beside the deployment guide so the release archive ships it with the docs.
+        text = (ROOT / "docs" / "nginx.example.conf").read_text()
+        self.assertIn("proxy_buffering off", text)
+        self.assertIn("X-Accel-Buffering", text)
+        self.assertIn("$request_method $uri", text)
+        # The sign-in callback carries one-time codes: no logging directive may
+        # include the query string (only the HTTP-to-HTTPS redirect keeps it).
+        loggable = [line for line in text.splitlines() if "return 301" not in line]
+        joined = "\n".join(loggable)
+        self.assertNotIn("$request_uri", joined)
+        self.assertNotIn("$args", joined)
 
     def test_documentation_local_links_resolve(self):
         paths = [ROOT / "README.md", ROOT / "README.zh-CN.md", *sorted((ROOT / "docs").glob("*.md"))]

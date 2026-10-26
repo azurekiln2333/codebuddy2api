@@ -11,7 +11,7 @@ Add an account in the [WebUI](webui.md) first. Replace `YOUR_GATEWAY_API_KEY` wi
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
 
-Domestic/international and CLI/WorkBuddy accounts use the same URLs. Backend routing is automatic; no `/cn` or `/intl` prefix is needed. Clients use the WebUI login key, not its management Cookie.
+Domestic/international and CLI/WorkBuddy accounts use the same URLs. Backend routing is automatic; no `/cn` or `/intl` prefix is needed. Clients use the inference API key (`CODEBUDDY2API_KEY`), independently of the console's OIDC login and session cookie.
 
 List available models:
 

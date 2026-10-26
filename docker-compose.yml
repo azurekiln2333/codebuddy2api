@@ -1,18 +1,56 @@
-# Support legacy Compose syntax; shell variables override automatic .env interpolation.
-version: "3.8"
-
+# Pull-only deployment of the unified CodeBuddy2Api application (backend + console).
+#
+# Requires Docker Compose v2 (`docker compose`). The `version:` key is obsolete and
+# the optional updater uses profiles, so Compose v1 / `docker-compose` is not supported.
+#
+# Quick start:
+#   cp .env.example .env        # set the fork image, the OIDC client and the data directory
+#   docker compose pull
+#   docker compose up -d --no-build
+#
+# Local source build (same application, never selected by the updater):
+#   docker compose -f docker-compose.yml -f docker-compose.build.yaml up -d --build
+#
+# Automatic image updates (opt-in; only this application, never itself):
+#   docker compose --profile auto-update up -d
+#
+# Registry login, upgrade, rollback and schema-safe downgrade: docs/deployment.md.
 
 services:
   codebuddy2api:
-    image: ${CODEBUDDY2API_IMAGE:-ghcr.io/maiphucgiang/codebuddy2api:1.3.5}
-    build: .
+    # Published fork image. Never the upstream author's repository: point this at
+    # this fork's GHCR path, its CNB mirror, or any registry you can pull from.
+    image: ${CODEBUDDY2API_IMAGE:-ghcr.io/azurekiln2333/codebuddy2api:latest}
     container_name: codebuddy2api
+    # Reap orphaned children instead of leaving PID 1 in charge.
+    init: true
     ports:
       - "${CODEBUDDY2API_BIND:-127.0.0.1}:${CODEBUDDY2API_PORT:-8787}:8787"
     volumes:
       # Persist credentials, SQLite databases and WAL/SHM files in one writable local directory.
       - "${CODEBUDDY2API_AUTH_PATH:-./auth}:/data/auth"
     environment:
+      # Console login is the Compose default. Startup fails closed when the OIDC
+      # settings below are incomplete; there is no API-key fallback in SSO mode.
+      # Set CODEBUDDY2API_SSO_ENABLED=false only for legacy local API operation.
+      CODEBUDDY2API_SSO_ENABLED: ${CODEBUDDY2API_SSO_ENABLED:-true}
+      # Public HTTPS origin browsers use (OIDC redirect base and Origin allowlist).
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      # Confidential OIDC client. The browser never receives these values.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REFRESH: ${OIDC_REFRESH:-false}
+      # Loopback-only development escape hatch for plain-HTTP origins. Never true in production.
+      ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}
+      # Optional session tuning; an empty value keeps the built-in default.
+      SESSION_TTL_MS: ${SESSION_TTL_MS:-}
+      SESSION_IDLE_MS: ${SESSION_IDLE_MS:-}
+      TRANSACTION_TTL_MS: ${TRANSACTION_TTL_MS:-}
+      MAX_SESSIONS: ${MAX_SESSIONS:-}
+      OAUTH_TIMEOUT_MS: ${OAUTH_TIMEOUT_MS:-}
+      # Server api_key for inference clients and backend automation only. The
+      # console never reads it: browsers authenticate through the OIDC session.
       CODEBUDDY2API_KEY: ${CODEBUDDY2API_KEY:-}
       CODEBUDDY2API_ADMIN_CSRF: ${CODEBUDDY2API_ADMIN_CSRF:-true}
       # Daily guards key on a local calendar day, so the container should share the
@@ -54,3 +92,41 @@ services:
       --skip-check
       --desensitize
     restart: unless-stopped
+    # The updater selects containers by label, not by name: this service opts in,
+    # the updater itself opts out, and both share one per-deployment scope.
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.scope: "${COMPOSE_PROJECT_NAME:-codebuddy2api}"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Optional image updater. Inactive unless the auto-update profile is requested,
+  # so a default `docker compose up -d` never pulls or restarts anything on its own.
+  # Maintained fork of the archived containrrr/watchtower; labels keep the original
+  # com.centurylinklabs.watchtower.* namespace. Pinned by version, never `latest`.
+  watchtower:
+    profiles: [auto-update]
+    image: nickfedor/watchtower:1.23.2
+    restart: unless-stopped
+    environment:
+      # Only containers carrying watchtower.enable=true are candidates.
+      WATCHTOWER_LABEL_ENABLE: "true"
+      # Same scope as the application: this deployment alone, not other projects.
+      WATCHTOWER_SCOPE: "${COMPOSE_PROJECT_NAME:-codebuddy2api}"
+      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-600}"
+      WATCHTOWER_CLEANUP: "true"
+    volumes:
+      # Root-equivalent access to the Docker host. Never publish or reuse this service elsewhere.
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      # The updater must never update itself.
+      com.centurylinklabs.watchtower.enable: "false"
+      com.centurylinklabs.watchtower.scope: "${COMPOSE_PROJECT_NAME:-codebuddy2api}"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

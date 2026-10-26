@@ -4,13 +4,17 @@
 
 日常账号、模型与日志管理优先使用 [WebUI](webui.zh-CN.md)。以下命令均在仓库根目录执行。
 
+Docker 部署需要 **Docker Compose v2**（`docker compose`）。已废弃的 `version:` 键已移除，可选更新服务使用 profile，因此不再支持 Compose v1 / `docker-compose`。
+
 ## 配置与数据
 
 首次部署运行 `cp .env.example .env`，并将 `CODEBUDDY2API_KEY` 设置为自己的随机密钥。已有 `.env` 请保留，只按需追加配置。
 
 | 配置 | 作用 |
 |------|------|
-| `CODEBUDDY2API_IMAGE` | Compose 镜像；模板默认 `codebuddy2api:local` |
+| `CODEBUDDY2API_IMAGE` | 要拉取的 Compose 镜像；模板指向本 fork，不得使用上游作者仓库 |
+| `CODEBUDDY2API_SSO_ENABLED` / `PUBLIC_ORIGIN` / `OIDC_*` / `ALLOW_INSECURE_LOCALHOST` | 控制台登录，见[控制台登录](#控制台登录oidc) |
+| `WATCHTOWER_POLL_INTERVAL` | 自动检查镜像的间隔秒数；默认 `600` |
 | `CODEBUDDY2API_BIND` / `CODEBUDDY2API_PORT` | 本地监听与 Compose 宿主机映射；默认 `127.0.0.1:8787` |
 | `CODEBUDDY2API_AUTH_PATH` | Compose 宿主机数据目录；默认 `./auth`，挂载到容器 `/data/auth` |
 | `CODEBUDDY2API_TRUSTED_PROXIES` | 可信代理 IP/CIDR（逗号分隔）；直连地址命中时审计改记 `X-Forwarded-For`/`X-Real-IP` 里的真实客户端地址，而不是代理地址 |
@@ -23,39 +27,147 @@ Compose 从 `.env` 读取已声明变量，shell 变量优先。默认宿主机�
 
 数据目录需整体挂载在可写本地存储，不要只挂载单个 SQLite 文件，也不要在多个实例间共享。升级前停止网关并备份整个目录，见[数据与备份](webui.zh-CN.md#数据与备份)。
 
+## 控制台登录（OIDC）
+
+Compose 默认以控制台登录模式运行（`CODEBUDDY2API_SSO_ENABLED=true`）。首次 `docker compose up` 前必须填写下列全部值；缺失时启动直接失败，且该模式下管理登录不存在 API key 回退。
+
+| 配置 | 作用 |
+|------|------|
+| `PUBLIC_ORIGIN` | 浏览器访问的公网 HTTPS 源，末尾不带斜杠；同时用于 Origin 白名单与跳转基址 |
+| `OIDC_ISSUER` | 提供 HTTPS discovery 与 JWKS 的签发方 |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | 机密客户端凭证；浏览器不会拿到 secret |
+| `OIDC_REFRESH` | 设为 `true` 时申请 `offline_access` 并启用轮换刷新令牌 |
+| `ALLOW_INSECURE_LOCALHOST` | 仅回环开发用的明文 HTTP 逃生门；生产必须保持 `false` |
+| `SESSION_TTL_MS` / `SESSION_IDLE_MS` / `TRANSACTION_TTL_MS` / `MAX_SESSIONS` / `OAUTH_TIMEOUT_MS` | 可选会话调优（留空则用默认值）；`SESSION_IDLE_MS` 大于 `SESSION_TTL_MS` 时启动失败 |
+
+在身份提供方注册回调地址 `<PUBLIC_ORIGIN>/sso/callback`，并授予 `openid profile roles`。`roles` 必需：管理员授权读取实时用户信息，需要同时具备管理员角色与该角色的管理员标记。`CODEBUDDY2API_KEY` 仍是推理与自动化凭证，控制台不会使用它。仅在无控制台登录的旧式本地 API 运行时才设 `CODEBUDDY2API_SSO_ENABLED=false`。
+
 ## Docker Compose
 
 ### 使用已发布镜像
 
-在 `.env` 中将 `CODEBUDDY2API_IMAGE` 设为 `ghcr.io/maiphucgiang/codebuddy2api:<版本>`（选择已发布的版本），然后运行：
+在 `.env` 中将 `CODEBUDDY2API_IMAGE` 设为自己的 fork 已发布镜像。模板默认指向本 fork 的 GHCR 路径；部署到别处时替换其中的 owner 即可。两个平台发布的发行版标签集合相同：
+
+```dotenv
+# GitHub fork
+CODEBUDDY2API_IMAGE=ghcr.io/<github-owner>/codebuddy2api:latest
+# CNB fork（仓库 slug 本身已包含仓库名）
+CODEBUDDY2API_IMAGE=docker.cnb.cool/<cnb-repo-slug>:latest
+```
+
+随后直接拉取并启动，宿主机不做任何构建：
 
 ```bash
 docker compose pull
 docker compose up -d --no-build
 ```
 
-镜像支持 `linux/amd64` 与 `linux/arm64`。版本标签固定发行版，`latest` 跟随稳定版，`edge` 跟随 main。功能以所选版本为准；旧镜像可能不包含当前源码的 WebUI。
+工作流面向 `linux/amd64` 与 `linux/arm64`。`latest` 只跟随稳定发行版，`X.Y.Z` 选择稳定发行版，`vX.Y.Z-<pre>` 选择预发布版。GitHub 还从 main 发布 `edge`；CNB 的 main 执行校验与打包，版本标签触发镜像发布。功能以所选版本为准。首次使用拉取命令前须先发布本 fork 镜像，此前可使用本地构建覆盖配置。
+
+镜像内置基于 `/health` 的存活健康检查。用 `docker compose ps`（状态应变为 `healthy`）或 `docker inspect --format '{{.State.Health.Status}}' codebuddy2api` 确认。
+
+### Registry 认证
+
+公开的 GHCR 包可直接匿名拉取。私有包或其它 registry 需在宿主机先登录一次：
+
+```bash
+# GHCR：使用带 read:packages 的 classic PAT
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+
+# CNB：使用仓库或平台设置里的 CNB_TOKEN
+echo "$CNB_TOKEN" | docker login docker.cnb.cool -u cnb --password-stdin
+```
+
+凭证不要写进 `.env` 或 Compose 文件，交由宿主机 Docker 凭证存储管理。
+
+宿主机登录**不会**被更新服务看到：`docker login` 写的是宿主机的 `~/.docker/config.json`，而更新器在自己的容器里运行、有自己的文件系统，因此默认 Compose 文件不挂载任何凭证。镜像仓库需要认证、同时又要自动更新时，增加一份本地覆盖文件。把它保存为与 `docker-compose.yml` 同目录的 `docker-compose.registry.yaml`（不要提交），并用两个文件启动：
+
+```yaml
+services:
+  watchtower:
+    volumes:
+      # 未设置 DOCKER_CONFIG 时，更新器从 /config.json 读取配置。
+      - ${HOME}/.docker/config.json:/config.json:ro
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.registry.yaml --profile auto-update up -d
+```
+
+仅在宿主机文件确实存在时加这份覆盖：绑定挂载源不存在时 Docker 会创建目录，更新器将无法读取配置。Windows 不展开 `${HOME}`，请写绝对路径，或用 `DOCKER_CONFIG` 指向存放该文件的目录。
+
+宿主机的 `config.json` 若依赖凭证助手（`credsStore` / `credHelpers`），助手二进制必须存在于更新器容器内，因为镜像本身不包含任何助手。可以挂载助手并调整 `HOME`/`PATH`，或改用一份只含该 registry 凭证的最小 `config.json` 挂进去：
+
+```json
+{ "auths": { "ghcr.io": { "auth": "<base64 user:token>" } } }
+```
+
+这份文件不要放进仓库。不加覆盖文件时，更新服务无法拉取私有镜像，但应用容器从手动拉取的镜像启动仍然正常。
 
 ### 构建当前源码
 
+独立覆盖文件让 `build:` 不进入默认文件，纯拉取部署不可能被静默改成本机编译：
+
 ```bash
-docker compose build
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.build.yaml up -d --build
 ```
 
-构建包含 WebUI；宿主机无需安装 Node.js 和 Python。启动后打开 `http://127.0.0.1:8787/dashboard` 添加账号。
+构建包含控制台，宿主机无需 Node.js 与 Python。打开 `http://127.0.0.1:8787/dashboard` 通过身份提供方登录。本地构建的镜像被标记为不参与更新服务，因为重新构建才是该镜像更新的唯一方式。
+
+### 自动镜像更新
+
+更新服务默认不启动，只有显式请求其 profile 时才运行：
+
+```bash
+docker compose --profile auto-update up -d
+```
+
+它每 `WATCHTOWER_POLL_INTERVAL` 秒（默认 `600`）检查一次 registry，且只处理带本项目更新标签的容器。更新器不会更新自身；不同部署目录或 `-p` 项目名对应不同 scope，因此同一台机器上的两套部署不会互相选中对方的容器。
+
+只有当镜像 digest 变化时它才重建容器。重建后健康检查通过仅说明应用存活，不代表账号或模型可用，也没有自动回滚应用的能力。
+
+停用自动更新：不启用 profile，或停掉正在运行的更新器：
+
+```bash
+docker compose --profile auto-update stop watchtower
+docker compose --profile auto-update rm -f watchtower
+```
+
+使用固定的发行版标签（`:X.Y.Z`）只是缩小影响范围，并不等于冻结镜像：标签是可变的，重新发布同一标签会用新 digest 覆盖它，更新器照旧会部署新 digest。需要绝对固定时请改用 digest：用 `docker inspect --format '{{index .RepoDigests 0}}' codebuddy2api` 或发行说明取得 digest，把 `CODEBUDDY2API_IMAGE` 设为 `<registry>/codebuddy2api@sha256:<digest>`。digest 引用不会改变，对它的检查始终是空操作；推荐的冻结做法是冻结单个部署，而项目其它地方继续跟随 `latest`。
 
 ### 升级与重建
 
-修改 `.env` 后重新执行对应的 `docker compose up -d` 以重建配置发生变化的容器。更新本地源码后需重新构建；使用发布镜像时选择并拉取新版本。仅执行 `docker compose restart` 不会应用新的环境变量。保留数据目录即可保留登录状态。
+修改 `.env` 后重新执行 `docker compose up -d` 以重建配置发生变化的容器。仅执行 `docker compose restart` 不会应用新的环境变量。数据目录会跨重建保留账号、凭证与数据库；控制台登录会话只存在内存中，因此重建、重启或自动更新后所有人都需重新登录。
+
+使用发布镜像时，手动升级永远两步：
+
+```bash
+docker compose pull
+docker compose up -d --no-build
+```
+
+### 回退
+
+固定上一个发行版并重建：
+
+```bash
+# 1. 先停应用，再动数据。
+docker compose down
+# 2. 把 .env 里的镜像改回上一个稳定版。
+#    CODEBUDDY2API_IMAGE=<registry>/codebuddy2api:X.Y.Z
+docker compose pull
+docker compose up -d --no-build
+```
+
+控制库只能向前迁移：旧镜像无法读取新版写过的数据库。回退跨过 schema 变更时，必须停机、用升级前的整份 `auth/` 备份覆盖、再启动旧镜像。不要在运行中的实例下回滚数据库，也不要用过期备份覆盖升级后产生的领取、派遣或会话撤销。若开着更新 profile，先固定目标 —— digest 引用不会移动，而重新发布的版本标签会 —— 否则更新器会把新镜像再拉回来。
 
 ## 反向代理与 HTTPS
 
-默认的回环映射是唯一无需额外工作的安全暴露方式。将网关放到域名反代之后时：
+默认的回环映射是唯一无需额外工作的安全暴露方式。将应用放到域名反代之后时，[`nginx.example.conf`](nginx.example.conf) 是现成示例：TLS 终结、不缓冲不压缩的流式转发，以及绝不记录 `/sso/callback` 查询串的访问日志格式。
 
-- 在反代终止 TLS，并转发原始 Host 与协议（nginx 配置 `proxy_set_header Host $host` 与 `X-Forwarded-Proto $scheme`）。
-- WebUI 会比较浏览器 `Origin` 与网关实际看到的地址。反代改写转发的 Host/协议时（例如域名 HTTPS 访问而容器内看到 HTTP），登录会报 Origin 校验失败。此时把对外地址加入「系统设置 → 管理页额外信任来源」，或设置 `CODEBUDDY2API_ADMIN_ORIGINS` / `--admin-allowed-origins`，而不是关闭 CSRF 保护；见[管理 Origin 校验](advanced.zh-CN.md#管理-origin--csrf-开关)。
-- 任何非回环暴露都必须保持鉴权（`CODEBUDDY2API_KEY`）。
+- 在反代终止 TLS，并转发原始 Host 与协议（nginx 配置 `proxy_set_header Host $http_host` 与 `X-Forwarded-Proto $scheme`）。
+- `PUBLIC_ORIGIN` 必须等于浏览器实际使用的源，且反代必须原样转发原始 Host 与协议（nginx 配置 `proxy_set_header Host $http_host` 与 `X-Forwarded-Proto $scheme`）。反代改写它们时（例如域名 HTTPS 访问而容器内看到 HTTP），控制台登录会报 Origin 校验失败。此时应修正转发的头部，而不是放宽校验：开启控制台登录后，`PUBLIC_ORIGIN` 是唯一被接受的管理来源，额外来源设置不再适用。
+- 任何非回环暴露都必须保留推理凭证（`CODEBUDDY2API_KEY`）；控制台登录不能代替它在 `/v1/*` 上的作用。
 
 ## 本地 Python 运行
 
@@ -68,6 +180,8 @@ uv run converter.py
 ```
 
 本地启动无需 `.env`。没有显式 key 时，首次回环启动会生成 `cb-…` 默认密钥，保存到 `auth/control.sqlite3`，监听成功后仅在交互终端显示一次；以后重启复用且不再打印。请妥善保存，管理登录与 API 请求共用。首次后台或非回环部署请显式配置 key。
+
+这种零配置模式只是 API 兼容模式。新版控制台没有 key 登录入口，即使在本机回环也必须先配置控制台登录（SSO）才能打开 `/dashboard`。要在本机使用控制台，请导出 `CODEBUDDY2API_SSO_ENABLED=true`、`PUBLIC_ORIGIN=http://127.0.0.1:8787`、`OIDC_ISSUER`、`OIDC_CLIENT_ID`、`OIDC_CLIENT_SECRET` 与 `ALLOW_INSECURE_LOCALHOST=true`，并在身份提供方注册回调 `http://127.0.0.1:8787/sso/callback`。`ALLOW_INSECURE_LOCALHOST` 仅对回环来源放宽明文 HTTP，其它环境必须保持 `false`。
 
 密码提示直接写入控制终端（`/dev/tty` 或 Windows `CONOUT$`），不经过 stdout/stderr，重定向标准输出不会收集密码；外部终端录制不在程序控制范围内。
 
@@ -122,17 +236,17 @@ Docker 中使用 `docker compose exec codebuddy2api python3 converter.py login -
 
 ## 不使用 Compose
 
-准备 `.env` 后，构建并运行本地源码镜像：
+直接运行已发布镜像：
 
 ```bash
-docker build -t codebuddy2api:local .
-docker run -d --name codebuddy2api -p 127.0.0.1:8787:8787 \
-  --env-file .env -v "$PWD/auth:/data/auth" \
-  -e CODEBUDDY_AUTH_DIR=/data/auth codebuddy2api:local
+docker run -d --name codebuddy2api --init --restart unless-stopped \
+  -p 127.0.0.1:8787:8787 --env-file .env \
+  -v "$PWD/auth:/data/auth" \
+  -e CODEBUDDY_AUTH_DIR=/data/auth <registry>/codebuddy2api:latest
 ```
 
-该命令显式使用默认端口与目录，不依赖 Compose 的端口映射。在 WebUI 添加账号，或运行 `docker exec -it codebuddy2api python3 converter.py login --no-browser`。
+想跑源码就先用 `docker build -t codebuddy2api:local .` 构建。该命令显式使用默认端口与目录，不依赖 Compose 的端口映射。在控制台添加账号，或运行 `docker exec -it codebuddy2api python3 converter.py login --no-browser`。
 
 ## 验证
 
-`curl http://127.0.0.1:8787/health` 应返回 `{"status":"ok"}`。它只表示存活，不代表账号或模型可用；请在 WebUI 中查看。API 接入见[客户端配置](clients.zh-CN.md)，错误与重试边界见[进阶参考](advanced.zh-CN.md)。
+`curl http://127.0.0.1:8787/health` 应返回 `{"status":"ok"}`。它与镜像健康检查用的是同一个探针：仅代表存活，不代表账号或模型可用；请在控制台查看。Compose 把它作为容器健康状态，所以 `docker compose ps` 即可看出一次 pull 或重启后应用是否真的起来了。API 接入见[客户端配置](clients.zh-CN.md)，错误与重试边界见[进阶参考](advanced.zh-CN.md)。
