@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/10-26-unified-codebuddy2api/design.md","reason":"Unified native SSO, UI, release and deployment contracts; explicit ownership overrides old read-only backend restriction."}
+{"file":".trellis/spec/frontend/gateway-session.md","reason":"Preserve the browser session, CSRF and stale-response contracts while moving the server implementation."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend executable gates and accessibility/layout assertions; reference geometry is updated in the task design."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review data flow and authority across authentication, API, UI and delivery boundaries."}

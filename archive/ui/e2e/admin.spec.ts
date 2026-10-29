@@ -1,0 +1,403 @@
+import { expect, test, type Page } from "@playwright/test";
+// Browser fixtures speak the gateway SSO contract (see e2e/sso.ts).
+import { GATEWAY_CSRF, mockSession } from "./sso";
+const model = {
+  id: "mock-model",
+  public_id: "mock-model",
+  enabled: true,
+  keep_original: true,
+  region: null,
+  profile: null,
+  credential_ids: [],
+  credits: 0,
+  credits_by_profile: { "cn-cli": 0 },
+};
+const credential = {
+  id: "mock-account",
+  name: "mock-account.info",
+  enabled: true,
+  profile: "cn-cli",
+  nickname: "隔离测试账号",
+  health: "ready",
+  fail_until: 0,
+  cooldowns: [{ model: "mock-model", until: Date.now() / 1000 + 90 }],
+  credits: { remaining: 250 },
+  token_expires_at: Date.now() + 86400000,
+  catalog_ready: true,
+};
+const request = {
+  id: "mock-request",
+  started_at: 1789200000,
+  model: "mock-model",
+  profile: "cn-cli",
+  outcome: "success",
+  status_code: 200,
+  duration_ms: 1520,
+  total_tokens: 420,
+  credit: 0,
+  attempts: [{ outcome: "success", credential: "mock-account", status_code: 200 }],
+};
+const settings = {
+  revision: 1,
+  items: [
+    {
+      key: "audit_retention_days",
+      label: "审计明细保留天数",
+      type: "integer",
+      value: 30,
+      stored: null,
+      source: "default",
+      mode: "hot",
+      locked: false,
+      min: 1,
+      max: 36500,
+    },
+    {
+      key: "port",
+      label: "监听端口",
+      type: "integer",
+      value: 9000,
+      stored: null,
+      source: "cli",
+      mode: "restart",
+      locked: true,
+    },
+  ],
+  audit: {
+    logical_bytes: 1024,
+    db_bytes: 32768,
+    wal_bytes: 4096,
+    shm_bytes: 32768,
+    degraded: false,
+  },
+  session: { degraded: false, last_error: null, path: "/tmp/admin-sessions.json" },
+};
+async function mockAPI(page: Page, authenticated = true) {
+  const calls: { method: string; path: string; body: unknown }[] = [];
+  let polls = 0;
+  const session = await mockSession(page, authenticated);
+  await page.route("**/admin/**", async (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    const path = url.pathname;
+    const method = req.method();
+    const body: unknown = req.postData() ? req.postDataJSON() : null;
+    calls.push({ method, path: path + url.search, body });
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status });
+    if (!session.authenticated) return send({ error: { message: "未认证" } }, 401);
+    if (method !== "GET" || path.endsWith("/poll"))
+      expect(req.headers()["x-csrf-token"]).toBe(GATEWAY_CSRF);
+    if (path === "/admin/dashboard")
+      return send({
+        summary: { requests: 126, success_rate: 0.98, total_tokens: 45678, credit: 0 },
+        series: [1, 2, 3, 4, 5, 6, 7].map((day) => ({
+          date: `2026-09-0${day}`,
+          requests: day * 6,
+          success: day * 6,
+          error: 0,
+        })),
+        models: [{ model: "mock-model", requests: 126, total_tokens: 45678, credit: 0 }],
+        profiles: [
+          { profile: "cn-cli", requests: 96 },
+          { profile: "intl-work", requests: 30 },
+        ],
+        health: { credentials: [credential] },
+        storage: {
+          logical_bytes: 1024,
+          max_bytes: 268435456,
+          db_bytes: 32768,
+          wal_bytes: 4096,
+          shm_bytes: 32768,
+          degraded: false,
+          dropped_records: 0,
+        },
+        official_credits: { "mock-account.info": { credits: { remaining: 250 } } },
+        generated_at: 1789200000,
+        range: { days: 7 },
+      });
+    if (path === "/admin/models") return send({ revision: 1, models: [model] });
+    if (path.endsWith("/preview"))
+      return send({ candidates: [{ id: credential.id, name: credential.name }], excluded: [] });
+    if (path === "/admin/models/mock-model")
+      return send({ error: { message: "配置已更新，请刷新后重试" } }, 409);
+    if (path === "/admin/credentials") return send({ credentials: [credential] });
+    if (path === "/admin/credentials/export")
+      return route.fulfill({
+        body: '{"test_fixture":true}',
+        contentType: "application/octet-stream",
+        headers: { "Content-Disposition": 'attachment; filename="mock-account.info"' },
+      });
+    if (path === "/admin/credentials/upload")
+      return send({ results: [{ name: "import.info", ok: true }] });
+    if (path === "/admin/credentials/mock-account")
+      return send({ id: credential.id, enabled: false, revision: 2 });
+    if (path === "/admin/credentials/mock-account.info") return send({ ok: true });
+    if (path === "/admin/oauth/start") {
+      const hosts: Record<string, string> = {
+        cn: "www.codebuddy.cn",
+        intl: "www.workbuddy.ai",
+        "intl-codebuddy": "www.codebuddy.ai",
+      };
+      const host = hosts[url.searchParams.get("site") ?? "cn"];
+      if (!host) return send({ error: { message: "未知登录站点" } }, 400);
+      return send({
+        login_id: "mock-login",
+        verification_uri: `https://${host}/login?state=mock`,
+        expires_in: 120,
+      });
+    }
+    if (path === "/admin/oauth/poll") {
+      polls++;
+      return send({ done: true, imported: "mock-account.info" });
+    }
+    if (path === "/admin/logs/clear") return send({ ok: true });
+    if (path === "/admin/logs")
+      return send({
+        items: [
+          url.searchParams.get("kind") === "request"
+            ? request
+            : {
+                id: "mock-event",
+                started_at: 1789200000,
+                action: "mock.operation",
+                kind: url.searchParams.get("kind"),
+              },
+        ],
+        has_more: !url.searchParams.has("cursor"),
+        next_cursor: url.searchParams.has("cursor") ? null : "mock-cursor",
+      });
+    if (path === "/admin/logs/mock-request") return send(request);
+    if (path === "/admin/settings") return send(settings);
+    return send({ error: { message: `Unexpected mock request: ${method} ${path}` } }, 500);
+  });
+  return { calls, getPolls: () => polls };
+}
+test("model conflict surfaces as a retriable mutation error", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await mockAPI(page);
+  await page.goto("/dashboard/");
+  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
+  await expect(page.getByText("45,678", { exact: true }).first()).toBeVisible();
+  await expect(page.locator("aside")).toHaveCSS("width", "208px");
+  const sidebarBounds = await page.locator("aside").boundingBox();
+  const headingBounds = await page.getByRole("heading", { name: "运行概览" }).boundingBox();
+  expect(sidebarBounds!.x + sidebarBounds!.width).toBeLessThan(headingBounds!.x);
+  await page.screenshot({
+    path: "test-results/dashboard-desktop.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.getByRole("link", { name: "模型路由" }).click();
+  await page.getByRole("button", { name: "编辑规则" }).click();
+  await page.getByLabel("对外 ID").fill("my-alias");
+  await page.getByRole("button", { name: "预览候选路由" }).click();
+  await expect(page.getByRole("heading", { name: "路由预览" })).toBeVisible();
+  await page.getByRole("button", { name: "保存规则" }).click();
+  await expect(page.getByRole("alert")).toContainText("保存冲突");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("locked settings stay read-only behind their own tab", async ({ page }) => {
+  const mock = await mockAPI(page);
+  await page.goto("/dashboard/settings");
+  // Externally locked items live behind their own tab now.
+  await page.getByRole("tab", { name: /外部锁定/ }).click();
+  await expect(page.getByText("外部锁定", { exact: true })).toBeVisible();
+  // Locked rows expose no editable control: the value is shown and editing is deferred.
+  await expect(page.getByText("监听端口", { exact: true })).toBeVisible();
+  await expect(page.getByText("请在启动配置中修改。")).toBeVisible();
+  await expect(page.locator("input, select")).toHaveCount(0);
+  await page.getByRole("tab", { name: /可修改/ }).click();
+  await expect(page.getByLabel("审计明细保留天数")).toBeEnabled();
+  await expect(page.getByText("外部锁定", { exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/settings-locked-mobile.png", fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(mock.calls.every((call) => call.method === "GET")).toBe(true);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("deep dashboard routes, settings mutations and mobile containment", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const mock = await mockAPI(page);
+  await page.goto("/dashboard/");
+  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
+  await expect(page.getByText("45,678", { exact: true }).first()).toBeVisible();
+  await page.screenshot({ path: "test-results/dashboard-desktop.png", fullPage: true });
+  await page.getByRole("link", { name: "模型路由" }).click();
+  await expect(page.getByRole("button", { name: "新增模型" })).toBeVisible();
+  await page.getByRole("link", { name: "系统设置" }).click();
+  await page.getByRole("link", { name: "系统设置" }).click();
+  await page.getByRole("tab", { name: /可修改/ }).click();
+  await page.getByLabel("审计明细保留天数").fill("60");
+  await page.getByRole("button", { name: "保存更改" }).click();
+  await expect
+    .poll(() =>
+      mock.calls.some((call) => call.method === "PATCH" && call.path === "/admin/settings"),
+    )
+    .toBe(true);
+  await page.goto("/dashboard/no-such-page");
+  await expect(page).toHaveURL(/\/dashboard\/$/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: "test-results/dashboard-mobile.png", fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
+});
+test("credential OAuth terminates, upload/export and safe-name deletion are wired", async ({
+  page,
+}) => {
+  const mock = await mockAPI(page);
+  await page.goto("/dashboard/credentials");
+  await expect(page.getByText("认证正常")).toBeVisible();
+  await page.getByRole("button", { name: "添加凭证" }).click();
+  await page.getByRole("button", { name: "发起 OAuth 授权" }).click();
+  await expect(page.getByRole("link", { name: /打开官方授权页面/ })).toBeVisible();
+  await expect(page.getByText("授权完成，凭证已添加。")).toBeVisible({ timeout: 8000 });
+  await page.waitForTimeout(4500);
+  expect(mock.getPolls()).toBe(1);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "批量操作" }).click();
+  await page.getByRole("button", { name: "导入文件" }).click();
+  await page.getByLabel("选择 .info 或 ZIP").setInputFiles({
+    name: "import.info",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from('{"test_fixture":true}'),
+  });
+  await expect(page.getByText("已导入", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByLabel("选择 mock-account.info", { exact: true }).check();
+  await page.getByRole("button", { name: "导出已选 (1)" }).click();
+  await expect(page.getByText("文件包含明文认证信息")).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "我理解明文风险，下载已选凭证" }).click();
+  expect((await downloadPromise).suggestedFilename()).toBe("mock-account.info");
+  const unicodeFilename = "测试 账号.info";
+  await page.route("**/admin/credentials/export", (route) =>
+    route.fulfill({
+      body: '{"test_fixture":true}',
+      contentType: "application/octet-stream",
+      headers: {
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(unicodeFilename)}`,
+      },
+    }),
+  );
+  await page.getByRole("button", { name: "导出已选 (1)" }).click();
+  const unicodeDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "我理解明文风险，下载已选凭证" }).click();
+  expect((await unicodeDownload).suggestedFilename()).toBe(unicodeFilename);
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除凭证" }).click();
+  await expect
+    .poll(() =>
+      mock.calls.some(
+        (call) => call.method === "DELETE" && call.path === "/admin/credentials/mock-account.info",
+      ),
+    )
+    .toBe(true);
+});
+test("deleting a bound credential confirms the automatic unbind", async ({ page }) => {
+  const mock = await mockAPI(page);
+  await page.route("**/admin/credentials", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    return route.fulfill({ json: { credentials: [{ ...credential, bindings: ["mock-model"] }] } });
+  });
+  await page.goto("/dashboard/credentials");
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(page.getByText("该凭证仍被模型规则引用：mock-model。")).toBeVisible();
+  await expect(page.getByText("确认后将自动解除这些绑定，规则回退为自动选择账号。")).toBeVisible();
+  await page.getByRole("button", { name: "解除绑定并删除凭证" }).click();
+  await expect
+    .poll(() =>
+      mock.calls.some(
+        (call) =>
+          call.method === "DELETE" && call.path === "/admin/credentials/mock-account.info?unbind=1",
+      ),
+    )
+    .toBe(true);
+});
+test("international OAuth choices send distinct sites and show the selected official host", async ({
+  page,
+}) => {
+  const mock = await mockAPI(page);
+  await page.goto("/dashboard/credentials");
+  await page.getByRole("button", { name: "添加凭证" }).click();
+  const select = page.getByLabel("登录站点");
+  await expect(select).toHaveValue("cn");
+  for (const [site, label, host] of [
+    ["intl", "国际 · WorkBuddy", "www.workbuddy.ai"],
+    ["intl-codebuddy", "国际 · CodeBuddy", "www.codebuddy.ai"],
+  ]) {
+    await select.selectOption({ label });
+    await expect(select).toHaveValue(site);
+    await page.getByRole("button", { name: "发起 OAuth 授权" }).click();
+    await expect(page.getByRole("link", { name: /打开官方授权页面/ })).toHaveAttribute(
+      "href",
+      `https://${host}/login?state=mock`,
+    );
+    await expect(select).toBeDisabled();
+    expect(mock.calls.some((call) => call.path === `/admin/oauth/start?site=${site}`)).toBe(true);
+    await page.getByRole("button", { name: "停止轮询" }).click();
+    await expect(select).toBeEnabled();
+  }
+});
+test("log tabs, cursor, details and guarded destructive clear (no browser admin secret)", async ({
+  page,
+}) => {
+  const mock = await mockAPI(page);
+  await page.goto("/dashboard/logs");
+  await page.getByRole("button", { name: "查看详情" }).click();
+  await expect(page.getByRole("heading", { name: "实际尝试", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText("第 2 页", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "运行事件" }).click();
+  await expect(page.getByText("mock.operation")).toBeVisible();
+  await page.getByRole("tab", { name: "管理操作" }).click();
+  await page.getByRole("button", { name: "清理日志" }).click();
+  await page.getByLabel("清理范围").selectOption("all");
+  await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeDisabled();
+  // The gateway re-authenticates server-side; the browser never asks for the secret.
+  expect(await page.getByLabel("当前 API key").count()).toBe(0);
+  await page.getByLabel("输入“清空全部日志与统计”").fill("清空全部日志与统计");
+  await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeEnabled();
+  await page.getByRole("button", { name: "确认不可撤销的清理" }).click();
+  await expect.poll(() => mock.calls.some((call) => call.path === "/admin/logs/clear")).toBe(true);
+  const clear = mock.calls.find((call) => call.path === "/admin/logs/clear")!;
+  expect(clear.method).toBe("POST");
+  expect(clear.body).toEqual({ scope: "all", confirmation: "清空全部日志与统计" });
+  expect(JSON.stringify(clear.body)).not.toContain("api_key");
+});
+test("anonymous gateway session never persists a secret and API failure is not zero-data success", async ({
+  page,
+}) => {
+  const session = await mockSession(page, false);
+  await page.goto("/dashboard/settings");
+  await expect(page).toHaveURL(/\/dashboard\/login$/);
+  // Only the unified-identity entry point remains; no key is stored in the browser.
+  expect(await page.getByText("不会在浏览器中保存", { exact: false }).count()).toBe(0);
+  expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
+  await expect(page.getByRole("link", { name: /统一身份登录/ })).toHaveAttribute(
+    "href",
+    "/sso/login?return_to=/dashboard/",
+  );
+  expect(
+    await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })),
+  ).toEqual({ local: 0, session: 0 });
+  expect(session.calls.every((call) => call.path === "/sso/session")).toBe(true);
+
+  // Signed-in failure path: an upstream error must not render as empty success.
+  session.sets(true);
+  await page.route("**/admin/dashboard?**", (route) =>
+    route.fulfill({ status: 503, json: { error: { message: "隔离测试：存储不可用" } } }),
+  );
+  await page.goto("/dashboard/");
+  await expect(page.getByRole("alert")).toContainText("隔离测试：存储不可用");
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.waitForTimeout(300);
+  await expect(page.getByRole("alert")).toContainText("隔离测试：存储不可用");
+  await expect(page.getByText("请求总量", { exact: true })).toHaveCount(0);
+});

@@ -1,0 +1,159 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { MemoryRouter } from "react-router";
+import { AppRoutes } from "./App";
+import { api, useResource, useSession } from "./api";
+import { Empty, PageTitle } from "./components";
+import { Dashboard } from "./pages/Dashboard";
+import { Settings } from "./pages/Settings";
+
+vi.mock("./api", async (original) => ({
+  ...(await original<typeof import("./api")>()),
+  useResource: vi.fn(),
+}));
+beforeEach(() => vi.restoreAllMocks());
+function resource(data: unknown) {
+  vi.mocked(useResource).mockReturnValue({ data, error: null, loading: false, reload: vi.fn() });
+}
+const settings = {
+  revision: 7,
+  items: [
+    {
+      key: "api_key",
+      label: "管理密钥",
+      value: null,
+      stored: null,
+      source: "environment",
+      mode: "startup",
+      type: "secret",
+      locked: true,
+    },
+    {
+      key: "host",
+      label: "监听地址",
+      value: "127.0.0.1",
+      stored: "127.0.0.1",
+      source: "cli",
+      mode: "restart",
+      type: "string",
+      locked: true,
+    },
+    {
+      key: "audit_retention_days",
+      label: "日志保留天数",
+      value: 30,
+      stored: 60,
+      source: "management",
+      mode: "hot",
+      type: "integer",
+      locked: false,
+    },
+  ],
+  audit: { degraded: false, logical_bytes: 0 },
+  session: { degraded: false, last_error: null, path: "/tmp/admin-sessions.json" },
+};
+
+describe("concise user-facing copy", () => {
+  it("offers SSO without accepting an administrative key", () => {
+    useSession.setState({ status: "anonymous", csrf: null, error: null });
+    const { container } = render(
+      <MemoryRouter initialEntries={["/dashboard/login"]}>
+        <AppRoutes />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("heading", { name: "登录 CodeBuddy2Api" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /登录/ }).getAttribute("href")).toBe(
+      "/sso/login?return_to=/dashboard/",
+    );
+    expect(container.querySelector("input, form")).toBeNull();
+  });
+
+  it("renders titles and empty states without developer explanations", () => {
+    const { container } = render(
+      <>
+        <PageTitle title="模型路由" />
+        <Empty title="暂无数据" />
+      </>,
+    );
+    expect(screen.getByRole("heading", { name: "模型路由" })).toBeTruthy();
+    expect(screen.getByText("暂无数据")).toBeTruthy();
+    expect(container.textContent).not.toMatch(/WORKSPACE|真实数据|演示数据|接口契约/);
+    expect(container.querySelectorAll("p")).toHaveLength(0);
+  });
+
+  it("keeps optional task-specific guidance", () => {
+    render(<Empty title="没有匹配结果">请调整筛选条件。</Empty>);
+    expect(screen.getByText("请调整筛选条件。")).toBeTruthy();
+  });
+
+  it("keeps configuration source, locks, and pending effective values clear", () => {
+    resource(settings);
+    const { container } = render(<Settings />);
+    expect(screen.getByText("当前生效：30")).toBeTruthy();
+    expect(screen.getByText("已保存：60")).toBeTruthy();
+    expect(screen.queryByText("当前生效：未知")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /外部锁定/ }));
+    expect(screen.queryByText("管理密钥")).toBeNull();
+    expect(screen.getByText("命令行")).toBeTruthy();
+    expect(screen.getByText("重启后生效")).toBeTruthy();
+    expect(screen.getAllByText("外部锁定")).toHaveLength(1);
+    expect(container.textContent).not.toMatch(
+      /revision|schema|WebUI 不写入|服务端校验为准|内部常量/,
+    );
+  });
+
+  it("surfaces a session store that could not persist a revocation", () => {
+    resource({ ...settings, session: { degraded: true, last_error: "OSError" } });
+    render(<Settings />);
+    expect(screen.getByText("会话存储")).toBeTruthy();
+    expect(screen.getByText("撤销未生效")).toBeTruthy();
+    expect(screen.getByText(/退出登录可能未真正生效/)).toBeTruthy();
+  });
+
+  it("stays quiet while the session store is healthy", () => {
+    resource(settings);
+    render(<Settings />);
+    expect(screen.queryByText("会话存储")).toBeNull();
+  });
+
+  it("still submits the revision and only edited settings", async () => {
+    resource(settings);
+    const patch = vi.spyOn(api, "patch").mockResolvedValue({ data: {} });
+    render(<Settings />);
+    fireEvent.change(screen.getByLabelText("日志保留天数"), { target: { value: "90" } });
+    expect(screen.getByText("1 项待保存")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "保存更改" }));
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("/settings", {
+        revision: 7,
+        values: { audit_retention_days: 90 },
+      }),
+    );
+  });
+
+  it("retains degraded-state warnings, cooldowns, and unknown versus zero metrics", () => {
+    resource({
+      summary: { requests: 1, success_rate: 1, total_tokens: null, credit: 0 },
+      series: [],
+      models: [],
+      profiles: [],
+      health: {
+        credentials: [
+          { name: "合成凭证", profile: "cn-cli", enabled: false, health: "ready", cooldowns: [{}] },
+        ],
+      },
+      storage: { degraded: true },
+      official_credits: {},
+      generated_at: 1,
+    });
+    const { container } = render(<Dashboard />);
+    expect(screen.getByRole("alert").textContent).toBe("统计可能不完整，请检查日志存储状态。");
+    expect(screen.getByText("人工停用")).toBeTruthy();
+    expect(screen.getByText("1 个模型冷却")).toBeTruthy();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Credit 消耗")[0].closest("section")?.textContent).toContain("0");
+    expect(container.textContent).not.toMatch(
+      /一个客户端请求只统计一次|未知用量不计为零|人工状态与熔断独立|未导入的旧文本日志/,
+    );
+  });
+});

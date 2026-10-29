@@ -1,0 +1,29 @@
+{
+  "id": "azurekiln-admin-ui",
+  "name": "azurekiln-admin-ui",
+  "title": "AzureKiln independent administration UI",
+  "description": "Deployable AzureKiln UI preserving upstream admin workflows with gateway SSO and complete responsive themes",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "lichengyu",
+  "assignee": "lichengyu",
+  "createdAt": "2026-10-15",
+  "completedAt": "2026-10-16",
+  "branch": "feat/azurekiln-admin-ui",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": "f2ff16b048a5025fc7c566a88c1308b929f4c9ea",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "2026-10-16 visual correction accepted by coordinating root. Final check and 176 unit tests passed; build passed with notices. All 36 browser scenarios verified (35/36 full run plus 1/1 after fixture-only revision correction); root reviewed final light/dark/mobile screenshots and YaHei CDP evidence. Source frozen; explicit-path commit and journal belong to root. No push/deployment. docs/validation.md and correction.md record evidence, artifact paths and limits.",
+  "meta": {
+    "visualCorrection": "2026-10-16: user reopened task; New API Base UI/Tailwind 4 shell is primary reference; dashboard-first review; unified commit by coordinating root only",
+    "originalCompletedAt": "2026-10-15"
+  }
+}

@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/10-26-unified-codebuddy2api/prd.md","reason":"Full user requirements and requirement-by-requirement acceptance audit."}
+{"file":".trellis/tasks/10-26-unified-codebuddy2api/design.md","reason":"Single-process architecture and cross-owner implementation contracts."}
+{"file":".trellis/spec/frontend/gateway-session.md","reason":"Verify anonymous/forbidden distinction, token handling, CSRF and session race behavior."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required frontend checks and rendered desktop/mobile light/dark validation."}
