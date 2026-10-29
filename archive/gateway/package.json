@@ -1,0 +1,25 @@
+{
+  "name": "codebuddy2api-oauth-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node --env-file-if-exists=.env dist/main.js",
+    "dev": "node --env-file-if-exists=.env --import tsx src/main.ts",
+    "test": "tsc -p tsconfig.test.json && node --test .tmp/test-build/tests/*.test.js",
+    "test:backend": "tsc -p tsconfig.test.json && node --test .tmp/test-build/tests/backend.test.js"
+  },
+  "dependencies": {
+    "jose": "^6.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
