@@ -5,16 +5,19 @@
 [English](README.md)
 
 - 支持 Chat Completions、Responses 和 Anthropic Messages，包含工具调用与流式输出。
+- 三种推理协议统一兼容工具 Schema 与上游渠道响应。
 - 内置 **WebUI**：组织单点登录，管理模型、凭证、日志与设置。
 - 多账号自动选路，兼容国内／国际站，自动刷新凭证。
-- 按账号配置自动任务：国内默认签到后派 Buddy 旅行，可分别关闭；国际自动签到默认关闭。
+- 按账号配置自动任务：国内个人账号默认签到后派 Buddy 旅行，可分别关闭；国际自动签到默认关闭。成长中心仅面向个人账号：已完成任务自动领取积分与能量，行为链按任务开关执行；企业账号不参与。
+
+开发时可运行无真实凭证的模拟上游接口；SSO 控制台使用原生 OIDC 测试夹具验证。见[开发与测试](docs/development.zh-CN.md)。
 
 ## 快速开始
 
 准备 Git 和 Docker Compose。先通过本仓库的 GitHub 或 CNB 工作流发布镜像。应用镜像包含后端和控制台。
 
 ```bash
-git clone https://github.com/<your-account>/codebuddy2api.git
+git clone https://github.com/azurekiln2333/codebuddy2api.git
 cd codebuddy2api
 cp .env.example .env
 ```
@@ -22,7 +25,7 @@ cp .env.example .env
 编辑 `.env`，填写自己的镜像和推理密钥。配置控制台的 OIDC 客户端。在身份提供方登记 `<PUBLIC_ORIGIN>/sso/callback`。升级时保留已有 `.env`。
 
 ```dotenv
-CODEBUDDY2API_IMAGE=ghcr.io/<your-account>/codebuddy2api:latest
+CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest
 CODEBUDDY2API_KEY=replace-with-a-random-inference-key
 CODEBUDDY2API_SSO_ENABLED=true
 PUBLIC_ORIGIN=https://api.example.com
@@ -36,13 +39,14 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-`latest` 跟随稳定发行版；需固定部署时改用已发布的版本标签。镜像功能以对应版本为准，不包含尚未合并的源码分支改动。
+Compose 默认拉取 `latest`（`CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest`）；镜像同时发布发行版本（例如 `1.5.4`）与跟随 `main` 的 `edge`。需固定部署时改用版本标签；镜像功能以对应版本为准，不包含尚未合并的源码分支改动。
 
 首次使用：
 
 1. 打开 **`<PUBLIC_ORIGIN>/dashboard/`**。通过组织身份提供方登录管理员账号。
-2. 在「凭证管理」扫码添加国内或国际账号，也可导入 `.info` 文件。
-3. 在「模型路由」查看可用模型，将其对外 ID 填入客户端。
+2. 在「凭证管理」扫码添加国内或国际账号，也可导入 `.info` 文件，或按端点粘贴刷新令牌批量导入。
+3. 在「密钥管理」为每个客户端创建推理密钥，按需设置模型、IP、有效期和速率限制。
+4. 在「模型路由」查看可用模型，将其对外 ID 填入客户端。
 
 模板默认绑定本机地址。通过反向代理提供配置中的 HTTPS 站点。保留完整的 `auth/` 数据目录。[部署指南](docs/deployment.zh-CN.md)包含 CNB 镜像、本地构建、自动更新和版本回退。
 
@@ -60,10 +64,17 @@ docker compose --profile auto-update up -d --no-build
 |------|----------|
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
+| MCP（web_search + web_fetch 工具） | `http://127.0.0.1:8787/v1/mcp` |
+| REST 联网搜索 / 抓取 | `POST http://127.0.0.1:8787/v1/search` / `POST http://127.0.0.1:8787/v1/fetch` |
+| 图像 / 视频生成 | `POST http://127.0.0.1:8787/v1/images/generations` / `POST /v1/images/edits` / `POST /v1/videos` |
 
-- **API Key**：推理客户端使用 `CODEBUDDY2API_KEY`。浏览器控制台使用 SSO 会话。
+- 媒体生成按上游积分计费，只路由到已实测验证的账号产品；见[媒体生成](docs/clients.zh-CN.md#媒体生成)。
+
+- **API Key**：使用「密钥管理」创建的密钥，或外部配置的管理密钥；WebUI 管理 Cookie 不能调用 `/v1/*`。 浏览器控制台独立使用 OIDC/SSO 会话登录。
 - **模型**：使用 WebUI 中的对外 ID，或查询 `GET /v1/models`。
 - 国内、国际账号共用这些地址，无需额外的地域参数。Anthropic SDK 会自行追加 `/v1/messages`，不要把它写入 Base URL。
+- 搜索与抓取端点不调用模型。在请求里声明 Anthropic `web_search_*`／`web_fetch_*` 或 OpenAI `web_search` 服务端工具时，网关会自行执行，见[联网搜索与抓取](docs/clients.zh-CN.md#联网搜索与抓取)。
+- 工具参数：三种推理协议均会将空参数根转换为对象 Schema；带字段级布尔 `required` 标记的旧式参数映射会包入 `properties`，必填字段名汇总到根部。`pattern` 等 Schema 关键字若对应的是字段，仍按字段名处理。标准 Schema、含 `$`／`x-` 扩展的根以及嵌套 Schema 保持原样。
 
 [Codex CLI、Claude Code / CC Switch 等配置示例 →](docs/clients.zh-CN.md)
 
@@ -75,6 +86,7 @@ docker compose --profile auto-update up -d --no-build
 ├── app/                 # 管理 API、凭证、目录、审计与策略模块
 ├── web/                 # WebUI 前端（React/TypeScript，构建产物由网关托管）
 ├── tests/               # 离线回归测试
+├── preview/             # 开发预览：真实网关 + 模拟上游 + 合成账号
 ├── docs/                # 用户文档（中英双语）
 ├── examples/            # 客户端配置示例
 ├── scripts/             # 版本校验、发布打包与依赖锁定工具

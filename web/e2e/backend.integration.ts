@@ -32,7 +32,10 @@ test("real management API: session, model alias, audit, clear, and file credenti
   const { csrf } = await signIn(page);
   await expect(page.getByText("125", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "模型路由" }).click();
-  await page.getByRole("button", { name: "编辑规则" }).click();
+  await page
+    .getByRole("row", { name: /fixture-model/ })
+    .getByRole("button", { name: "编辑规则" })
+    .click();
   await page.getByLabel("对外 ID").fill("garden-fixture");
   await page.getByRole("button", { name: "保存规则" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -161,4 +164,81 @@ test("manual trial uses the real admin API and persists success and failed-attem
     rows.find((row: { name: string }) => row.name === "trial-timeout.info").trial.can_claim,
   ).toBe(false);
   expect(errors).toEqual([]);
+});
+
+test("real management API: media summary, settings round-trip and asset CSP", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const { csrf } = await signIn(page);
+
+  const summary = await (await page.request.get("/admin/media")).json();
+  expect(summary.available).toBe(true);
+  expect(summary.configured).toBe(false);
+  const catalog = await (await page.request.get("/admin/models")).json();
+  expect(
+    catalog.models.some(
+      (model: { id: string; media_kinds?: string[] }) =>
+        model.id === "hunyuan-image-v3.0" && model.media_kinds?.includes("image"),
+    ),
+  ).toBe(true);
+
+  const settings = await (await page.request.get("/admin/settings")).json();
+  const saved = await page.request.patch("/admin/settings", {
+    headers: writeHeaders(csrf),
+    data: {
+      revision: settings.revision,
+      values: { media_public_base_url: "https://media.example.com" },
+    },
+  });
+  expect(saved.status()).toBe(200);
+  const after = await (await page.request.get("/admin/media")).json();
+  expect(after.configured).toBe(true);
+  expect(after.base_url).toBe("https://media.example.com");
+
+  const listed = await (await page.request.get("/admin/media/assets")).json();
+  expect(listed.items.length).toBeGreaterThan(0);
+  const asset = listed.items[0];
+  expect(asset.public_url).toContain("/v1/media/images/");
+  const content = await page.request.get(`/admin/media/assets/${asset.id}/content`);
+  expect(content.status()).toBe(200);
+  expect(content.headers()["content-security-policy"]).toBe("sandbox; default-src 'none'");
+  expect(content.headers()["x-content-type-options"]).toBe("nosniff");
+  // The public read route serves the same bytes without any session or key.
+  const publicRead = await page.request.get(`/v1/media/images/${asset.id}`);
+  expect(publicRead.status()).toBe(200);
+  expect(publicRead.headers()["content-security-policy"]).toBe("sandbox; default-src 'none'");
+  expect((await publicRead.body()).length).toBe(asset.size);
+  expect(errors).toEqual([]);
+});
+
+test("real management API: SSO session reload and API key lifecycle", async ({ page }) => {
+  const { csrf } = await signIn(page);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
+
+  await page.goto("/dashboard/keys");
+  await page.getByRole("button", { name: "新建密钥" }).click();
+  await page.getByLabel("名称", { exact: true }).fill("real-e2e-standard");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const secret = await dialog.locator("code").textContent();
+  if (!secret) throw new Error("The real API did not return a key secret");
+  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  const inference = await page.request.get("/v1/models", {
+    headers: { Authorization: `Bearer ${secret}` },
+  });
+  expect(inference.status()).toBe(200);
+  const keys = await (await page.request.get("/admin/keys")).json();
+  const item = keys.items.find(
+    (row: { id: string; name: string }) => row.name === "real-e2e-standard",
+  );
+  const deleted = await page.request.delete(`/admin/keys/${item.id}`, {
+    headers: writeHeaders(csrf),
+    data: { version: item.version },
+  });
+  expect(deleted.status()).toBe(200);
+  const denied = await page.request.get("/v1/models", {
+    headers: { Authorization: `Bearer ${secret}` },
+  });
+  expect(denied.status()).toBe(401);
 });

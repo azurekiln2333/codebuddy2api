@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import asyncio
 from copy import deepcopy
 from email.utils import formatdate
-import json
 import threading
 import time
 import unittest
@@ -19,6 +18,7 @@ import converter as gateway
 from app import upstream_io
 from app.adapters.responses_adapter import responses_request_to_chat
 import test_region_routing as fixtures
+request_json = fixtures.request_json
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
 
@@ -82,7 +82,13 @@ class RetryAfterEndpointTests(GatewayFixture, unittest.TestCase):
                             self.assertEqual(response.headers.get("Retry-After"), "17")
                             self.assertNotIn("X-Private", response.headers)
                             self.assertEqual(response.json()["error"]["code"], "quota")
-                            self.assertEqual(len(seen), 1, "A retry hint must not enable replay")
+                            expected_attempts = 2 if profile == "cn-work" and status == 503 else 1
+                            self.assertEqual(len(seen), expected_attempts,
+                                             "Only domestic WorkBuddy may replay 503 on its backup origin")
+                            if expected_attempts == 2:
+                                self.assertEqual([request.url.host for request in seen],
+                                                 ["www.workbuddy.cn", "wb.tencentbuddy.com"])
+                                self.assertEqual(len({request.headers["x-user-id"] for request in seen}), 1)
                             entry = self.fx.entries[profile]
                             self.assertEqual(entry["fail_until"], 0)
                             if status == 429:
@@ -231,7 +237,7 @@ class CacheKeyTests(GatewayFixture, unittest.TestCase):
                         payload["prompt_cache_key"] = "synthetic-cache"
                         response = self.fx.client.post("/v1/" + route, json=payload)
                         self.assertEqual(response.status_code, 200, response.text)
-                        self.assertEqual(json.loads(self.fx.requests[-1].content)["prompt_cache_key"], "synthetic-cache")
+                        self.assertEqual(request_json(self.fx.requests[-1])["prompt_cache_key"], "synthetic-cache")
 
 
 class PreparationResponsivenessTests(GatewayFixture, unittest.IsolatedAsyncioTestCase):

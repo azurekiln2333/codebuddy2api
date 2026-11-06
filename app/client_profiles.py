@@ -1,13 +1,19 @@
 """Build separate CLI and WorkBuddy identity headers with shared authentication fields."""
 
+import base64
+import binascii
 import hashlib
 import json
+import uuid
 
 from .site_routing import domain_for_auth, profile_for_auth, profile_product, profile_region
 
-CLI_VERSION = "2.149.0"
-WORKBUDDY_VERSION = "5.5.2"
-WORKBUDDY_CLI_VERSION = "2.137.1"
+CLI_VERSION = "2.179.3"
+WORKBUDDY_VERSION = "5.9.3"
+WORKBUDDY_CLI_VERSION = "2.165.0"
+INTL_CLI_VERSION = "2.179.3"
+INTL_WORKBUDDY_VERSION = "5.9.4"
+INTL_WORKBUDDY_CLI_VERSION = "2.165.0"
 CLI_USER_AGENT = f"CLI/{CLI_VERSION} CodeBuddy/{CLI_VERSION}"
 
 SDK_HEADERS = {
@@ -26,14 +32,23 @@ SDK_HEADERS = {
 }
 
 
+def _versions(profile):
+    if profile_region(profile) == "intl":
+        return INTL_CLI_VERSION, INTL_WORKBUDDY_VERSION, INTL_WORKBUDDY_CLI_VERSION
+    return CLI_VERSION, WORKBUDDY_VERSION, WORKBUDDY_CLI_VERSION
+
+
 def identity_headers(profile: str) -> dict:
     """Use verified package versions without reading desktop settings or device identities."""
+    cli_version, workbuddy_version, workbuddy_cli_version = _versions(profile)
     if profile_product(profile) == "cli":
-        return {"User-Agent": CLI_USER_AGENT, "X-IDE-Type": "CLI", "X-IDE-Name": "CLI", "X-IDE-Version": CLI_VERSION}
+        return {"User-Agent": f"CLI/{cli_version} CodeBuddy/{cli_version}",
+                "X-IDE-Type": "CLI", "X-IDE-Name": "CLI", "X-IDE-Version": cli_version}
     name = "WorkBuddy AI" if profile_region(profile) == "intl" else "WorkBuddy"
     return {
-        "User-Agent": f"WorkBuddy/{WORKBUDDY_VERSION} {name}/{WORKBUDDY_VERSION} CLI/{WORKBUDDY_CLI_VERSION}",
-        "X-IDE-Type": "WorkBuddy", "X-IDE-Name": "WorkBuddy", "X-IDE-Version": WORKBUDDY_VERSION,
+        "User-Agent": f"WorkBuddy/{workbuddy_version} {name}/{workbuddy_version} CLI/{workbuddy_cli_version}",
+        "X-IDE-Type": "WorkBuddy", "X-IDE-Name": "WorkBuddy", "X-IDE-Version": workbuddy_version,
+        "X-Private-Data": "true",
     }
 
 
@@ -49,18 +64,96 @@ def _auth_headers(auth: dict, account: dict) -> dict:
         "X-Domain": domain_for_auth(auth),
         "X-Product": "SaaS", "X-Requested-With": "XMLHttpRequest",
     }
-    headers.update(identity_headers(profile_for_auth(auth)))
+    profile = profile_for_auth(auth)
+    headers.update(identity_headers(profile))
+    if profile in ("cn-cli", "cn-work"):
+        # CLI 2.165+ disables model optimization for enterprise accounts.
+        headers["X-Private-Data"] = "true" if is_enterprise_account(account) else "false"
+    return headers
+
+
+def _jwt_claims(auth: dict) -> dict:
+    """Read unsigned claims only as client metadata; upstream still authenticates the token."""
+    token = auth.get("accessToken")
+    if not isinstance(token, str) or token.count(".") != 2:
+        return {}
+    try:
+        encoded = token.split(".")[1]
+        decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        payload = json.loads(decoded)
+    except (ValueError, binascii.Error, UnicodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _identity_value(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if value and len(value) <= 128 and value.isascii() and value.isprintable() else ""
+
+
+def _identity_claim_headers(auth: dict, account: dict) -> dict:
+    claims = _jwt_claims(auth)
+    id_source = _identity_value(account.get("idSource") or account.get("id_source") or claims.get("id_source"))
+    token_source = _identity_value(claims.get("token_source") or auth.get("method"))
+    enterprise_id = enterprise_id_of(account) or ""
+    uid = canonical_uid(account)
+    headers = {}
+    if id_source:
+        headers["X-Id-Source"] = id_source
+    if token_source:
+        headers["X-Auth-Method"] = token_source
+    if uid and (enterprise_id or id_source or token_source):
+        userinfo = {"uin": uid}
+        if enterprise_id:
+            userinfo["owner_uin"] = enterprise_id
+        if id_source:
+            userinfo["id_source"] = id_source
+        if token_source:
+            userinfo["token_source"] = token_source
+        encoded = json.dumps(userinfo, separators=(",", ":")).encode("utf-8")
+        headers["X-Userinfo"] = base64.b64encode(encoded).decode("ascii")
     return headers
 
 
 def credential_headers(auth: dict, account: dict) -> dict:
-    return {**SDK_HEADERS, **_auth_headers(auth, account)}
+    profile = profile_for_auth(auth)
+    headers = {**SDK_HEADERS, **_auth_headers(auth, account), **_identity_claim_headers(auth, account)}
+    if profile in ("cn-cli", "intl-cli"):
+        headers["x-stainless-package-version"] = "7.39.0"
+        headers["X-Agent-Runtime"] = "other"
+    elif profile == "intl-work":
+        headers["X-Agent-Runtime"] = "local-agent"
+    return headers
+
+
+def _cn_work_nonchat_headers(headers: dict, profile: str) -> dict:
+    if profile == "cn-work":
+        headers["Accept"] = "application/json, text/plain, */*"
+        headers["X-Request-ID"] = uuid.uuid4().hex
+        headers.pop("X-CodeBuddy-Request", None)
+    return headers
+
+
+def credential_refresh_headers(auth: dict, account: dict) -> dict:
+    headers = credential_headers(auth, account)
+    return _cn_work_nonchat_headers(headers, profile_for_auth(auth))
+
+
+def refresh_headers(domain: str, uid: str = "") -> dict:
+    """Build headers for a refresh exchange that has no access token yet."""
+    auth = {"accessToken": "", "domain": domain}
+    headers = {**SDK_HEADERS, **_auth_headers(auth, {"uid": uid})}
+    headers.pop("Authorization", None)  # The refresh token is the only credential in this request.
+    return _cn_work_nonchat_headers(headers, profile_for_auth(auth))
 
 
 def catalog_headers(auth: dict, account: dict | None = None, *, user_agent="") -> dict:
-    headers = _auth_headers(auth, account or {})
+    profile = profile_for_auth(auth)
+    headers = _cn_work_nonchat_headers(_auth_headers(auth, account or {}), profile)
     headers["Connection"] = "close"
-    if profile_product(profile_for_auth(auth)) == "cli":
+    if profile_product(profile) == "cli":
         headers["x-client-platform"] = "cli"
         if user_agent:
             headers["User-Agent"] = user_agent
@@ -163,6 +256,7 @@ def canonical_uid(account) -> str:
 
 
 def catalog_cache_key(profile: str, identity: str | None = None) -> str:
-    revision = CLI_VERSION if profile_product(profile) == "cli" else f"{WORKBUDDY_VERSION}:{WORKBUDDY_CLI_VERSION}"
+    cli_version, workbuddy_version, workbuddy_cli_version = _versions(profile)
+    revision = cli_version if profile_product(profile) == "cli" else f"{workbuddy_version}:{workbuddy_cli_version}"
     key = f"{profile}:{revision}"
     return f"{key}:account:{identity}" if identity is not None else key

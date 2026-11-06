@@ -101,7 +101,8 @@ class ModelBlocksTests(unittest.TestCase):
             self.assertTrue(restored.blocked("https://a", "m"))
             self.assertEqual(restored.detail()[0]["hits"], 1)
             self.assertEqual(restored.detail()[0]["code"], "11102")
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            if os.name == "posix":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_unreadable_file_is_not_fatal(self):
         with tempfile.TemporaryDirectory() as tmp:

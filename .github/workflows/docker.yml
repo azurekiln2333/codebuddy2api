@@ -13,9 +13,11 @@ name: Build, package and release
 on:
   pull_request:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'examples/**', 'LICENSE']
   push:
     branches: [main]
     tags: ['v*']
+    paths-ignore: ['**.md', 'docs/**', 'examples/**', 'LICENSE']
   workflow_dispatch:
 
 permissions:
@@ -54,6 +56,7 @@ jobs:
         run: python scripts/run_backend_tests.py
 
   web:
+    needs: [test]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -101,6 +104,12 @@ jobs:
           # unconditionally. The external integration suite needs
           # AZUREKILN_INTEGRATION_URL, so it stays a manual suite only.
           vp exec playwright test -c playwright.native.config.ts
+      - name: Upload tested WebUI build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
 
   package:
     needs: [test, web]
@@ -117,27 +126,11 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - name: Set up Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - name: Download tested WebUI build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          node-version: '24.21.0'
-      - name: Install pinned vp
-        run: |
-          curl -fsSL https://github.com/voidzero-dev/vite-plus/releases/download/v0.3.1/vp-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/vp.tar.gz"
-          echo "a3a728816a5937fbfd06d9987c8d8a1152c6a90de22a827b840079140021d030  $RUNNER_TEMP/vp.tar.gz" | sha256sum --check
-          mkdir "$RUNNER_TEMP/vp"
-          tar -xzf "$RUNNER_TEMP/vp.tar.gz" -C "$RUNNER_TEMP/vp"
-          echo "$RUNNER_TEMP/vp" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/vp/vp" env off
-      - name: Build console bundle
-        working-directory: web
-        env:
-          GOMAXPROCS: '2'
-          GOMEMLIMIT: 512MiB
-          RAYON_NUM_THREADS: '2'
-        run: |
-          vp install --frozen-lockfile
-          vp build
+          name: web-dist
+          path: web/dist
       - name: Build release archive
         id: package
         run: python scripts/package.py
@@ -150,6 +143,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/SHA256SUMS
             dist/build-manifest.json
             dist/release-notes.md
           if-no-files-found: error
@@ -160,8 +154,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # Ordered gate: the Release is written only after the images are pushed, so a
     # failed image build cannot leave a Release that claims a published version.
-    # `image` must stay unskipped for tags (it carries no `if:` of its own and
-    # pushes when ref is a `v*` tag), otherwise this dependency skips the job.
+    # The image guard excludes PRs only, so version tags always reach this gate.
     needs: [test, package, image]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -188,8 +181,8 @@ jobs:
           set -euo pipefail
           cd dist
           sha256sum --check "${RELEASE_ARCHIVE}.sha256"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$RELEASE_ARCHIVE" "${RELEASE_ARCHIVE}.sha256" --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null; then
+            gh release upload "$RELEASE_TAG" "$RELEASE_ARCHIVE" "${RELEASE_ARCHIVE}.sha256" SHA256SUMS --clobber
             if [ "$RELEASE_PRERELEASE" = "true" ]; then
               gh release edit "$RELEASE_TAG" --notes-file release-notes.md --prerelease
             else
@@ -200,14 +193,14 @@ jobs:
             if [ "$RELEASE_PRERELEASE" = "true" ]; then
               flags+=(--prerelease)
             fi
-            gh release create "$RELEASE_TAG" "$RELEASE_ARCHIVE" "${RELEASE_ARCHIVE}.sha256" \
+            gh release create "$RELEASE_TAG" "$RELEASE_ARCHIVE" "${RELEASE_ARCHIVE}.sha256" SHA256SUMS \
               --verify-tag --title "codebuddy2api v$RELEASE_VERSION" \
               --notes-file release-notes.md "${flags[@]}"
           fi
 
   image:
-    # No `if:` guard on purpose: this job must still run for tag pushes because
-    # `release` depends on it. On PRs it builds without logging in or pushing.
+    # PRs validate and package; main and tag pushes also publish the tested image.
+    if: github.event_name != 'pull_request'
     needs: [test, web, package]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -219,6 +212,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Download tested WebUI build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: web-dist
+          path: web/dist
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -243,6 +241,7 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
+          build-contexts: webui=web/dist
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
           tags: ${{ steps.release.outputs.refs }}
@@ -250,7 +249,10 @@ jobs:
             org.opencontainers.image.version=${{ needs.test.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          build-args: |
+            BUILD_CHANNEL=${{ startsWith(github.ref, 'refs/tags/v') && needs.test.outputs.prerelease == 'false' && 'stable' || 'edge' }}
+            BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: mode=min
-          sbom: true
+          provenance: false
+          sbom: false

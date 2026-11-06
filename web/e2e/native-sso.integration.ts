@@ -177,13 +177,22 @@ test("real browser: click login, read live admin data, CSRF write, then logout",
 });
 
 test("real browser: an unauthenticated visitor never reaches an admin view", async ({ page }) => {
-  for (const path of ["/dashboard/", "/dashboard/settings", "/dashboard/storage"]) {
+  for (const path of [
+    "/dashboard/",
+    "/dashboard/settings",
+    "/dashboard/storage",
+    "/dashboard/keys",
+    "/dashboard/media",
+    "/dashboard/updates",
+  ]) {
     await page.goto(path);
     await expect(page).toHaveURL(/\/dashboard\/login$/);
     await expect(page.getByRole("heading", { name: "运行概览" })).toHaveCount(0);
   }
   expect((await page.request.get("/admin/dashboard")).status()).toBe(401);
   expect((await page.request.get("/admin/models")).status()).toBe(401);
+  for (const path of ["/admin/keys", "/admin/media", "/admin/update"])
+    expect((await page.request.get(path)).status(), path).toBe(401);
   expect(
     (
       await page.request.post("/admin/session", { data: { api_key: "native-fixture-key" } })

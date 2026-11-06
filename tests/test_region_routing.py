@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct execution.
 
 from copy import deepcopy
+import gzip
 import json
 import os
 import tempfile
@@ -27,6 +28,14 @@ DOMAINS = {
 }
 HOSTS = dict(DOMAINS, **{"cn-cli": "copilot.tencent.com"})
 GENERATIONS = ("chat/completions", "responses", "messages")
+
+
+def request_content(request):
+    return gzip.decompress(request.content) if request.headers.get("Content-Encoding") == "gzip" else request.content
+
+
+def request_json(request):
+    return json.loads(request_content(request))
 
 
 def model(identifier, credits=None):
@@ -53,6 +62,12 @@ def success_sse():
     ]
     return ("".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
             + "data: [DONE]\n\n").encode()
+
+
+def chat_model_ids(response):
+    """Exclude media routes when asserting the legacy chat catalog."""
+    return {item["id"] for item in response.json()["data"]
+            if not item.get("media_kinds") and not item.get("embedding") and not item.get("rerank")}
 
 
 class RegionRoutingTests(unittest.TestCase):
@@ -94,9 +109,14 @@ class RegionRoutingTests(unittest.TestCase):
         self.configure()
         self.client = self.enterContext(TestClient(converter.app))
 
-    def add_account(self, uid, profile):
+    def add_account(self, uid, profile, enterprise=""):
         now = time.time()
-        value = {"account": {"uid": uid, "enterpriseId": "synthetic-enterprise"},
+        # Real accounts are personal unless they carry a tenant, and the growth center
+        # refuses a tenant outright, so the default fixture must stay personal.
+        account = {"uid": uid}
+        if enterprise:
+            account["enterpriseId"] = enterprise
+        value = {"account": account,
                  "auth": {"domain": DOMAINS[profile], "accessToken": "synthetic-access-" + uid,
                           "refreshToken": "synthetic-refresh-" + uid,
                           "expiresAt": (now + 86400) * 1000, "lastRefreshTime": now * 1000}}
@@ -140,7 +160,13 @@ class RegionRoutingTests(unittest.TestCase):
         self.assertEqual(request.url.host, HOSTS[profile])
         self.assertEqual(request.headers["x-domain"], self.credentials[uid]["auth"]["domain"])
         self.assertEqual(request.headers["authorization"], "Bearer synthetic-access-" + uid)
-        for name, value in client_profiles.identity_headers(profile).items():
+        expected_private = "true" if request.headers.get("X-Enterprise-Id") else "false"
+        if profile in ("cn-cli", "cn-work"):
+            self.assertEqual(request.headers["X-Private-Data"], expected_private, profile)
+        expected_identity = client_profiles.identity_headers(profile)
+        if profile == "cn-work":
+            expected_identity["X-Private-Data"] = expected_private
+        for name, value in expected_identity.items():
             self.assertEqual(request.headers[name], value, (profile, name))
         self.assertEqual(request.headers["x-ide-type"],
                          "CLI" if profile.endswith("-cli") else "WorkBuddy")
@@ -206,7 +232,7 @@ class RegionRoutingTests(unittest.TestCase):
                 self.assertEqual(data["content"][0]["text"], "ok")
         self.assertEqual(len(self.requests), before + 1, response.text)
         request = self.requests[-1]
-        return request, json.loads(request.content)
+        return request, request_json(request)
 
     def post_rejected(self, endpoint, payload, statuses=(404, 503)):
         self.allowed_profiles = set()
@@ -515,7 +541,7 @@ class RegionRoutingTests(unittest.TestCase):
         response = self.client.get("/v1/models")
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["object"], "list")
-        actual = {item["id"] for item in response.json()["data"]}
+        actual = chat_model_ids(response)
         expected = {item["id"] for items in catalogs().values() for item in items}
         self.assertEqual(actual, expected | {"auto"})
 
@@ -569,7 +595,7 @@ class RegionRoutingTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
             if response.status_code == 200:
                 expected = {m["id"] for profile in eligible for m in catalogs()[profile]}
-                self.assertEqual({m["id"] for m in response.json()["data"]} - {"auto"}, expected)
+                self.assertEqual(chat_model_ids(response) - {"auto"}, expected)
                 if not eligible:
                     self.assertEqual(response.json()["data"], [])
         self.assertFalse(self.requests)
@@ -594,7 +620,7 @@ class RegionRoutingTests(unittest.TestCase):
                     self.assertIn(response.status_code, (200, 503), response.text)
                     if response.status_code == 200:
                         expected = ({"first-only"} if balance != 0 else set()) | ({"second-only"} if missing else set())
-                        self.assertEqual({m["id"] for m in response.json()["data"]} - {"auto"}, expected)
+                        self.assertEqual(chat_model_ids(response) - {"auto"}, expected)
 
     def test_auto_maps_to_each_accounts_declared_default_and_rotates(self):
         tables = catalogs()
@@ -651,7 +677,7 @@ class RegionRoutingTests(unittest.TestCase):
             _, body = self.post_ok(endpoint, self.payload(endpoint, "auto"), {"cn-cli"})
             self.assertEqual(body["model"], "auto")
 
-    def test_system_is_only_added_when_needed_and_preserves_payload_and_parameters(self):
+    def test_system_preserves_caller_instructions_without_gateway_default(self):
         for profile in PROFILES:
             self.configure(profiles=(profile,))
             for endpoint in GENERATIONS:
@@ -679,9 +705,8 @@ class RegionRoutingTests(unittest.TestCase):
                             self.assertEqual(systems, [{"role": "system", "content": system}])
                             self.assertEqual(messages[0], systems[0])
                         else:
-                            self.assertEqual(messages[0]["role"], "system")
-                            self.assertTrue(messages[0]["content"])
-                            self.assertEqual(len(systems), 1)
+                            self.assertEqual(systems, [])
+                            self.assertEqual(messages[0]["role"], "user")
 
     def test_late_system_is_not_overwritten_when_intl_requires_first_system(self):
         self.configure(profiles=("intl-cli",))

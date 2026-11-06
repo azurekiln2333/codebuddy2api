@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct exe
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import errno
 import hashlib
 import json
 import multiprocessing
@@ -18,6 +19,7 @@ from unittest.mock import patch
 import httpx
 
 from app.client_profiles import credential_headers
+from app import credential_io
 from app import trial_rewards as trial
 
 KEY = hashlib.sha256(b'["intl-work","synthetic-user","synthetic-tenant"]').hexdigest()
@@ -179,6 +181,48 @@ class ClaimTrialTests(unittest.TestCase):
                 self.assertEqual(len(calls), 1)
 
 
+@unittest.skipUnless(os.name == "nt", "Uses Windows byte-range locking")
+class WindowsFileLockTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_contention_retries_then_unlocks_after_the_critical_section(self):
+        import msvcrt
+        busy = OSError(errno.EACCES, "synthetic contention")
+        with patch.object(msvcrt, "locking", side_effect=[busy, None, None]) as locking, \
+                patch.object(credential_io.time, "sleep") as sleep:
+            with credential_io.credential_file_lock(self.root, "test.info"):
+                self.assertEqual(locking.call_count, 2)
+            self.assertEqual([call.args[1:] for call in locking.call_args_list],
+                             [(msvcrt.LK_NBLCK, 1), (msvcrt.LK_NBLCK, 1), (msvcrt.LK_UNLCK, 1)])
+            sleep.assert_called_once()
+
+    def test_contention_deadline_never_enters_the_critical_section(self):
+        import msvcrt
+        busy = OSError(errno.EACCES, "synthetic contention")
+        with patch.object(msvcrt, "locking", side_effect=busy) as locking, \
+                patch.object(credential_io.time, "monotonic", side_effect=[0, 10]), \
+                patch.object(credential_io.time, "sleep") as sleep:
+            with self.assertRaises(OSError) as raised:
+                with credential_io.credential_file_lock(self.root, "test.info"):
+                    self.fail("A contended lock must not enter the critical section")
+            self.assertIs(raised.exception, busy)
+            locking.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_other_io_errors_are_not_retried(self):
+        import msvcrt
+        failure = OSError(errno.EBADF, "synthetic bad descriptor")
+        with patch.object(msvcrt, "locking", side_effect=failure) as locking, \
+                patch.object(credential_io.time, "sleep") as sleep:
+            with self.assertRaises(OSError) as raised:
+                with credential_io.credential_file_lock(self.root, "test.info"):
+                    self.fail("A failed lock must not enter the critical section")
+            self.assertIs(raised.exception, failure)
+            locking.assert_called_once()
+            sleep.assert_not_called()
+
+
 class TrialLedgerTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="trial-rewards-test-")
@@ -222,11 +266,12 @@ class TrialLedgerTests(unittest.TestCase):
         record["ok"] = False
         self.assertTrue(self.ledger.summary(KEY)["ok"])
         self.assertLess(self.path.stat().st_size, 1024)
-        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        self.assertEqual(stat.S_IMODE(self.path.parent.stat().st_mode), 0o700)
         locks = list(self.path.parent.glob("*.lock"))
         self.assertEqual(len(locks), 1)
-        self.assertEqual(stat.S_IMODE(locks[0].stat().st_mode), 0o600)
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(self.path.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(locks[0].stat().st_mode), 0o600)
         for file in self.path.parent.iterdir():
             self.assertNotIn(b"synthetic", file.read_bytes())
             self.assertNotIn(b"Authorization", file.read_bytes())
@@ -292,6 +337,7 @@ class TrialLedgerTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), old)
             self.assertEqual(list(self.path.parent.glob("*.tmp")), [])
 
+    @unittest.skipUnless(os.name == "posix", "Directory fsync is supported on POSIX only")
     def test_directory_fsync_failure_prevents_http_even_after_replace(self):
         original = os.fsync
 

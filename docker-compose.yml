@@ -29,6 +29,9 @@ services:
     volumes:
       # Persist credentials, SQLite databases and WAL/SHM files in one writable local directory.
       - "${CODEBUDDY2API_AUTH_PATH:-./auth}:/data/auth"
+    env_file:
+      - path: ${CODEBUDDY2API_ENV_FILE:-.env}
+        required: false
     environment:
       # Console login is the Compose default. Startup fails closed when the OIDC
       # settings below are incomplete; there is no API-key fallback in SSO mode.
@@ -49,48 +52,11 @@ services:
       TRANSACTION_TTL_MS: ${TRANSACTION_TTL_MS:-}
       MAX_SESSIONS: ${MAX_SESSIONS:-}
       OAUTH_TIMEOUT_MS: ${OAUTH_TIMEOUT_MS:-}
-      # Server api_key for inference clients and backend automation only. The
-      # console never reads it: browsers authenticate through the OIDC session.
-      CODEBUDDY2API_KEY: ${CODEBUDDY2API_KEY:-}
-      CODEBUDDY2API_ADMIN_CSRF: ${CODEBUDDY2API_ADMIN_CSRF:-true}
-      # Daily guards key on a local calendar day, so the container should share the
-      # operator's zone; a UTC container turns those guards over at 08:00 Beijing.
+      # Optional gateway settings arrive through env_file without locking unset values.
       TZ: ${TZ:-UTC}
-      # First-Buddy onboarding may send one bounded real WorkBuddy conversation per account.
-      CODEBUDDY2API_AUTO_ACCEPT_BUDDY: ${CODEBUDDY2API_AUTO_ACCEPT_BUDDY:-false}
-      # Unset variables remain configurable through the WebUI.
-      CODEBUDDY2API_ADMIN_ORIGINS:
-      # Trusted proxy IPs/CIDRs; forwarded headers count only from these peers.
-      CODEBUDDY2API_TRUSTED_PROXIES:
-      CODEBUDDY2API_KEEP_TOOL_METADATA:
-      CODEBUDDY2API_MAX_IMAGES: ${CODEBUDDY2API_MAX_IMAGES:-16}
-      CODEBUDDY2API_IMAGE_POLICY: ${CODEBUDDY2API_IMAGE_POLICY:-truncate}
-      CODEBUDDY2API_MAX_REQUEST_BYTES: ${CODEBUDDY2API_MAX_REQUEST_BYTES:-33554432}
-      CODEBUDDY2API_LOG_BODY_LIMIT: ${CODEBUDDY2API_LOG_BODY_LIMIT:-65536}
-      CODEBUDDY2API_LOG: ${CODEBUDDY2API_LOG:-}
-      CODEBUDDY2API_MAX_INBOUND_BYTES: ${CODEBUDDY2API_MAX_INBOUND_BYTES:-67108864}
-      CODEBUDDY2API_MAX_COLLECT_BYTES: ${CODEBUDDY2API_MAX_COLLECT_BYTES:-8388608}
-      CODEBUDDY2API_MAX_CONCURRENT: ${CODEBUDDY2API_MAX_CONCURRENT:-64}
-      CODEBUDDY2API_UPSTREAM_KEEPALIVE:
-      CODEBUDDY2API_MAX_INFLIGHT_PER_ACCOUNT:
-      CODEBUDDY2API_REQUEST_CONTEXT_MODE:
-      CODEBUDDY2API_RESPONSES_PROJECTION_MODE:
-      CODEBUDDY2API_RESPONSES_PROJECTION_MAX_BYTES:
-      CODEBUDDY2API_STREAM_MODE:
-      CODEBUDDY2API_MODEL_CAPABILITY_GUARD:
-      CODEBUDDY2API_TOOL_CALL_MAX_RETRY: ${CODEBUDDY2API_TOOL_CALL_MAX_RETRY:-3}
-      CODEBUDDY2API_FAILOVER_MAX:
-      CODEBUDDY2API_RETRY_WRITE_TIMEOUT:
-      CODEBUDDY_IMPORT_DIR: ${CODEBUDDY_IMPORT_DIR:-/data/auth/imports}
-      # Bind container interfaces; host port mapping controls external access.
       CODEBUDDY2API_ALLOW_OPEN_NOAUTH: "true"
       CODEBUDDY_AUTH_DIR: /data/auth
-    command: >
-      python3 converter.py
-      --host 0.0.0.0
-      --port 8787
-      --skip-check
-      --desensitize
+    # The image CMD owns the listener flags and prompt adaptation settings.
     restart: unless-stopped
     # The updater selects containers by label, not by name: this service opts in,
     # the updater itself opts out, and both share one per-deployment scope.

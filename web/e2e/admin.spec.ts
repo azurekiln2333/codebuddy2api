@@ -1,3 +1,4 @@
+import { choose } from "./select";
 import { expect, test, type Page } from "@playwright/test";
 // Browser fixtures speak the gateway SSO contract (see e2e/sso.ts).
 import { GATEWAY_CSRF, mockSession } from "./sso";
@@ -35,7 +36,11 @@ const request = {
   duration_ms: 1520,
   total_tokens: 420,
   credit: 0,
-  attempts: [{ outcome: "success", credential: "mock-account", status_code: 200 }],
+  attempts: [
+    { outcome: "success", credential: "mock-account", status_code: 200 },
+    { stage: "server_tool", model: "web-search", outcome: "success", duration_ms: 812.5 },
+    { stage: "server_tool", model: "web-fetch", outcome: "error", duration_ms: 40 },
+  ],
 };
 const settings = {
   revision: 1,
@@ -326,13 +331,13 @@ test("international OAuth choices send distinct sites and show the selected offi
   await page.goto("/dashboard/credentials");
   await page.getByRole("button", { name: "添加凭证" }).click();
   const select = page.getByLabel("登录站点");
-  await expect(select).toHaveValue("cn");
+  await expect(select).toHaveText("中国大陆 · CN");
   for (const [site, label, host] of [
     ["intl", "国际 · WorkBuddy", "www.workbuddy.ai"],
     ["intl-codebuddy", "国际 · CodeBuddy", "www.codebuddy.ai"],
   ]) {
-    await select.selectOption({ label });
-    await expect(select).toHaveValue(site);
+    await choose(select, site);
+    await expect(select).toHaveText(label);
     await page.getByRole("button", { name: "发起 OAuth 授权" }).click();
     await expect(page.getByRole("link", { name: /打开官方授权页面/ })).toHaveAttribute(
       "href",
@@ -349,8 +354,10 @@ test("log tabs, cursor, details and guarded destructive clear (no browser admin 
 }) => {
   const mock = await mockAPI(page);
   await page.goto("/dashboard/logs");
+  await expect(page.getByText("联网 2", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "查看详情" }).click();
   await expect(page.getByRole("heading", { name: "实际尝试", exact: true })).toBeVisible();
+  await expect(page.getByRole("group", { name: "联网工具汇总" })).toContainText("852.5 ms");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.getByText("第 2 页", { exact: true })).toBeVisible();
@@ -358,7 +365,7 @@ test("log tabs, cursor, details and guarded destructive clear (no browser admin 
   await expect(page.getByText("mock.operation")).toBeVisible();
   await page.getByRole("tab", { name: "管理操作" }).click();
   await page.getByRole("button", { name: "清理日志" }).click();
-  await page.getByLabel("清理范围").selectOption("all");
+  await choose(page.getByLabel("清理范围"), "all");
   await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeDisabled();
   // The gateway re-authenticates server-side; the browser never asks for the secret.
   expect(await page.getByLabel("当前 API key").count()).toBe(0);

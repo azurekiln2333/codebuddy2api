@@ -1,6 +1,9 @@
 """Offline contracts for dependency hashes and immutable Docker inputs."""
 
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct execution.
 import re
 import tomllib
 import shlex
@@ -20,6 +23,12 @@ def requirement_lines(path):
             yield line.strip()
 
 
+def direct_requirements():
+    """Canonical names of the project's direct dependencies, read from pyproject."""
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    return {canonicalize_name(Requirement(dep).name) for dep in project["dependencies"]}
+
+
 class BuildLockTests(unittest.TestCase):
     def test_every_resolved_dependency_has_an_exact_version_and_sha256(self):
         locked = set()
@@ -36,15 +45,15 @@ class BuildLockTests(unittest.TestCase):
                 for digest in hashes:
                     self.assertRegex(digest.strip(), r"^sha256:[0-9a-f]{64}$")
                 locked.add(canonicalize_name(parsed.name))
-        direct = {canonicalize_name(Requirement(line).name)
-                  for line in requirement_lines(ROOT / "requirements.in")}
+        direct = direct_requirements()
         self.assertTrue(direct)
         self.assertTrue(direct <= locked)
 
     def test_uv_metadata_and_exported_locks_stay_consistent(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
         self.assertEqual(project["version"], (ROOT / "VERSION").read_text().strip())
-        self.assertEqual(set(project["dependencies"]), set(requirement_lines(ROOT / "requirements.in")))
+        self.assertEqual(direct_requirements(), {canonicalize_name(Requirement(dep).name)
+                                                 for dep in project["dependencies"]})
         lock = tomllib.loads((ROOT / "uv.lock").read_text())
         packages = {p["name"]: p for p in lock["package"] if p["name"] != project["name"]}
         exported = set()
@@ -89,6 +98,47 @@ class BuildLockTests(unittest.TestCase):
             self.assertEqual(shlex.split(install), ["python", "-m", "pip", "install",
                              "--require-hashes", "--only-binary=:all:", "-r", "requirements.txt"])
 
+
+    def test_published_image_tags_use_the_shared_release_contract(self):
+        """GitHub and CNB share version, prerelease and stable-alias rules."""
+        workflow = yaml.safe_load((ROOT / ".github/workflows/docker.yml").read_text())
+        steps = workflow["jobs"]["image"]["steps"]
+        resolve = next(step for step in steps if "release_tags.py" in step.get("run", ""))
+        self.assertIn("--platform github --emit github", resolve["run"])
+        build = next(step for step in steps
+                     if str(step.get("uses", "")).startswith("docker/build-push-action"))
+        self.assertEqual(build["with"]["tags"], "${{ steps.release.outputs.refs }}")
+        from scripts.release_tags import resolve_tags
+        self.assertIn("latest", resolve_tags("1.5.4", "refs/tags/v1.5.4"))
+        self.assertEqual(resolve_tags("1.5.4", "refs/heads/main"), ["edge"])
+        self.assertNotIn("latest", resolve_tags("1.5.4-rc.1", "refs/tags/v1.5.4-rc.1"))
+
+    def test_pull_requests_only_test_and_the_image_reuses_the_tested_webui(self):
+        """Tests run in sequence; the image is built after merge from the WebUI artifact."""
+        workflow = yaml.safe_load((ROOT / ".github/workflows/docker.yml").read_text())
+        # Documentation-only changes skip the pipeline; YAML 1.1 parses the "on" key as True.
+        docs = ["**.md", "docs/**", "examples/**", "LICENSE"]
+        for event in ("pull_request", "push"):
+            self.assertEqual(workflow[True][event]["paths-ignore"], docs)
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["web"]["needs"], ["test"])
+        self.assertEqual(jobs["image"]["if"], "github.event_name != 'pull_request'")
+        steps = jobs["image"]["steps"]
+        download = next(step for step in steps if str(step.get("uses", "")).startswith("actions/download-artifact"))
+        self.assertEqual(download["with"], {"name": "web-dist", "path": "web/dist"})
+        build = next(step for step in steps if str(step.get("uses", "")).startswith("docker/build-push-action"))
+        self.assertEqual(build["with"]["build-contexts"], "webui=web/dist")
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("FROM scratch AS webui", dockerfile)
+        self.assertIn("COPY --from=webui / ./web/dist/", dockerfile)
+
+    def test_release_job_detects_an_existing_release(self):
+        """gh release view rejects --verify-tag, which sent every tag down the create branch."""
+        steps = yaml.safe_load((ROOT / ".github/workflows/docker.yml").read_text())["jobs"]["release"]["steps"]
+        script = next(step["run"] for step in steps if "gh release upload" in step.get("run", ""))
+        view = next(line for line in script.splitlines() if "gh release view" in line)
+        self.assertNotIn("--verify-tag", view)
+        self.assertNotIn("2>&1", view)
 
     def test_ci_and_container_installs_require_verified_wheels(self):
         installs = []

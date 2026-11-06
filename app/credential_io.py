@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from contextlib import contextmanager
 import tempfile
+import time
 from pathlib import Path
 
 MAX_CREDENTIAL_BYTES = 1024 * 1024
@@ -70,7 +72,20 @@ def credential_file_lock(directory: Path, name: str):
                 stream.write(b"\0")
                 stream.flush()
             stream.seek(0)
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            # LK_LOCK retries only once per second, starving queued writers.
+            # Keep its bounded wait and the same cross-process byte-range lock.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    time.sleep(min(0.01, remaining))
         else:
             import fcntl
             fcntl.flock(fd, fcntl.LOCK_EX)

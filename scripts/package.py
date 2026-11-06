@@ -17,6 +17,7 @@ Outputs (in the output directory, default ``dist/``):
 
 * ``codebuddy2api-v<version>-<YYYYMMDD>.tar.gz`` -- deterministic archive
 * ``<archive>.sha256`` -- ``sha256sum --check`` compatible checksum
+* ``SHA256SUMS`` -- checksum index consumed by the WebUI update installer
 * ``build-manifest.json`` -- machine-readable release metadata
 * ``release-notes.md`` -- shared GitHub/CNB release description
 * ``cnb-release-options.json`` -- ``git:release`` options with ``overlying``
@@ -56,7 +57,6 @@ REQUIRED_WEB = ("web/dist/index.html",)
 REQUIRED_TREES = ("app",)
 OPTIONAL_FILES = (
     "pyproject.toml",
-    "requirements.in",
     "uv.lock",
     "LICENSE",
     "README.md",
@@ -491,6 +491,10 @@ def build_package(
         checksum_path.unlink(missing_ok=True)
         raise
     staging.replace(archive_path)
+    # The updater discovers this conventional asset name from GitHub releases.
+    # Keep it identical to the per-archive sidecar so both installation paths
+    # verify exactly the artifact produced and checked above.
+    (output / "SHA256SUMS").write_text(f"{digest}  {archive_name}\n", encoding="utf-8")
 
     manifest = {
         "name": NAME,

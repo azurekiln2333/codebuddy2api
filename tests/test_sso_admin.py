@@ -5,20 +5,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import unittest
+import tempfile
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
 
-from app import runtime_management
+from app import admin_account, runtime_management
 from app.admin_api import CLEAR_CONFIRMATION
-from app.inference_auth import require_api_key
+from app.control_store import ControlStore
+from app.inference_auth import InferenceAuthMiddleware, require_api_key
+from app.media_store import MediaStore
 from app.sso_auth import SESSION_COOKIE
 from app.sso_config import load as load_sso_config
-from tests.sso_fixture import FakeIdp, build_sso_app
+from tests.sso_fixture import FakeIdp, _Gateway, build_sso_app
 
 ORIGIN = {"Origin": "http://localhost"}
 LEGACY_KEY = "synthetic-management-key"
@@ -182,6 +185,114 @@ class SSOAdminBoundaryTests(unittest.TestCase):
         # The console session cookie must not authorize inference.
         self.login()
         self.assertEqual(self.client.get("/v1/models").status_code, 401)
+
+
+class SSONewManagementRoutesTests(unittest.TestCase):
+    """Exercise new management routes with real key/media persistence behind SSO."""
+
+    login = SSOAdminBoundaryTests.login
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        control = ControlStore(self.root / "control.sqlite3")
+        self.addCleanup(control.close)
+        admin_account.save(control, admin_account.new("local-admin", "synthetic-password", "user"))
+        media = MediaStore(self.root)
+        self.addCleanup(media.close)
+        gateway = _Gateway()
+        self.updater = Mock()
+        self.updater.view.return_value = {"current": "1.5.4", "job": {"status": "idle"}}
+        self.updater.check.return_value = self.updater.view.return_value
+        gateway.config.update(control_store=control, media_store=media, updater=self.updater)
+        gateway._media_ttl_hours = Mock(return_value=24)
+        gateway._media_max_bytes = Mock(return_value=1024 * 1024)
+        self.idp = FakeIdp()
+        self.app, self.service, self.config = build_sso_app(self.idp, gateway=gateway)
+        self.app.add_middleware(InferenceAuthMiddleware, config=self.config)
+
+        @self.app.post("/v1/chat/completions")
+        async def inference_probe(request: Request):
+            principal = request.state.api_principal
+            return {"id": principal.id, "type": principal.type}
+
+        self.client = self.enterContext(TestClient(self.app, base_url="http://localhost"))
+
+    def test_new_reads_require_sso_and_accept_an_authenticated_session(self):
+        paths = ("/admin/keys", "/admin/media", "/admin/media/assets", "/admin/media/tasks", "/admin/update")
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path, headers={"Authorization": f"Bearer {LEGACY_KEY}"}).status_code, 401)
+        self.login()
+        for path in paths:
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_local_password_login_and_account_management_stay_disabled(self):
+        response = self.client.post("/admin/session", headers=ORIGIN,
+                                    json={"username": "local-admin", "password": "synthetic-password"})
+        self.assertEqual(response.status_code, 405)
+        self.assertNotIn("cb_admin_session", self.client.cookies)
+        csrf = self.login()
+        self.assertEqual(self.client.get("/admin/account").status_code, 405)
+        self.assertEqual(self.client.put("/admin/account", headers={**ORIGIN, "X-CSRF-Token": csrf},
+                                         json={"current_password": "synthetic-password",
+                                               "new_password": "new-synthetic-password"}).status_code, 405)
+
+    def test_new_mutations_require_csrf_before_invoking_their_handlers(self):
+        csrf = self.login()
+        operations = (("POST", "/admin/keys", {"type": "standard", "name": "test"}),
+                      ("DELETE", "/admin/sessions", None),
+                      ("POST", "/admin/update/check", None),
+                      ("DELETE", "/admin/media/assets/missing", None),
+                      ("POST", "/admin/logs/clear", {"scope": "all", "confirmation": CLEAR_CONFIRMATION}))
+        for method, path, body in operations:
+            with self.subTest(path=path):
+                self.assertEqual(self.client.request(method, path, json=body, headers=ORIGIN).status_code, 403)
+                self.assertEqual(self.client.request(method, path, json=body,
+                                 headers={"Origin": "https://evil.invalid", "X-CSRF-Token": csrf}).status_code, 403)
+        self.assertEqual(self.config["key_store"].list(), [])
+        self.updater.check.assert_not_called()
+        self.config["audit_store"].clear.assert_not_called()
+        self.assertTrue(self.service.sessions)
+        headers = {**ORIGIN, "X-CSRF-Token": csrf}
+        self.assertEqual(self.client.post("/admin/update/check", headers=headers).status_code, 200)
+        self.updater.check.assert_called_once_with(True)
+        self.assertEqual(self.client.delete("/admin/media/assets/missing", headers=headers).status_code, 404)
+
+    def test_revoking_all_sessions_invalidates_other_browser_sessions(self):
+        self.login()
+        previous = self.client.cookies.get(SESSION_COOKIE)
+        self.client.cookies.clear()
+        csrf = self.login()
+        self.assertEqual(len(self.service.sessions), 2)
+        response = self.client.delete("/admin/sessions", headers={**ORIGIN, "X-CSRF-Token": csrf})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(self.service.sessions)
+        self.assertNotIn(SESSION_COOKIE, self.client.cookies)
+        self.client.cookies.set(SESSION_COOKIE, previous)
+        self.assertEqual(self.client.get("/admin/keys").status_code, 401)
+
+    def test_inference_keys_created_under_sso_cannot_authorize_management(self):
+        csrf = self.login()
+        headers = {**ORIGIN, "X-CSRF-Token": csrf}
+        standard = self.client.post("/admin/keys", headers=headers, json={"type": "standard", "name": "test"})
+        self.assertEqual(standard.status_code, 200, standard.text)
+        self.config["api_key"] = ""
+        admin = self.client.post("/admin/keys", headers=headers, json={"type": "admin", "name": "test admin"})
+        self.assertEqual(admin.status_code, 200, admin.text)
+        self.assertEqual(self.client.post("/v1/chat/completions", json={}).status_code, 401)
+        self.client.cookies.clear()
+        for created in (standard.json(), admin.json()):
+            with self.subTest(kind=created["type"]):
+                for key_header in ({"Authorization": f"Bearer {created['secret']}"}, {"X-Api-Key": created["secret"]}):
+                    response = self.client.post("/v1/chat/completions", headers=key_header, json={})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json(), {"id": created["id"], "type": created["type"]})
+                    self.assertEqual(self.client.get("/admin/keys", headers=key_header).status_code, 401)
+                    self.assertEqual(self.client.post("/admin/logs/clear", headers=key_header,
+                                                     json={"scope": "details"}).status_code, 401)
 
 
 class RuntimeWiringTests(unittest.TestCase):

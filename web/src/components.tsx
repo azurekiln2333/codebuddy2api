@@ -1,16 +1,23 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorMessage, object } from "./api";
 import { lockPage } from "./modal";
 import { useExiting } from "./presence";
 export { DrawerPresence } from "./presence";
 import s from "./ui.module.scss";
 import { useT } from "./i18n";
+import { Select } from "./fields";
+import { ToastRegion } from "./toast";
 
 export function Icon({ name = "grid", size = 16 }: { name?: string; size?: number }) {
   const paths: Record<string, string> = {
     grid: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
     model: "m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5",
     key: "M14 4a6 6 0 1 1-3 11l-6 6H2v-3l6-6a6 6 0 0 1 6-8Z M16 8h.01",
+    account: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9a7 7 0 0 1 14 0",
+    lock: "M6 10V7a6 6 0 0 1 12 0v3m-13 0h14v11H5V10Zm7 5v3",
+    eye: "M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7Zm9.5 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+    eyeOff:
+      "m3 3 18 18M10.6 5.4A10.8 10.8 0 0 1 12 5c6 0 9.5 7 9.5 7a18 18 0 0 1-3.1 3.7M6.1 6.1C3.9 7.6 2.5 12 2.5 12s3.5 7 9.5 7c1.4 0 2.7-.4 3.8-.9",
     logs: "M6 3h12v18H6z M9 7h6M9 11h6M9 15h4",
     settings: "M4 7h16M4 17h16M8 4v6M16 14v6",
     arrow: "M5 12h14m-5-5 5 5-5 5",
@@ -39,10 +46,20 @@ export function Icon({ name = "grid", size = 16 }: { name?: string; size?: numbe
     system: "M3 4h18v13H3zM8 21h8m-4-4v4",
     down: "M12 3v12m0 0 4-4m-4 4-4-4M5 21h14",
     up: "M12 21V9m0 0 4 4m-4-4-4 4M5 3h14",
+    clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4.5V12l3 2",
+    restore: "M3 12a9 9 0 1 0 2.6-6.4L3 8m0-5v5h5",
+    globe:
+      "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm-9 9h18M12 3c2.3 2.4 3.5 5.4 3.5 9s-1.2 6.6-3.5 9c-2.3-2.4-3.5-5.4-3.5-9s1.2-6.6 3.5-9Z",
+    // Feather's "github" mark (MIT), drawn in the same stroke style as the rest of the set.
+    github:
+      "M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22",
     cache:
       "M12 3c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3Zm8 3v12c0 1.7-3.6 3-8 3s-8-1.3-8-3V6m16 6c0 1.7-3.6 3-8 3s-8-1.3-8-3",
     database:
       "M12 8c4.4 0 8-1.3 8-3s-3.6-3-8-3-8 1.3-8 3 3.6 3 8 3Zm-8 2v9c0 1.7 3.6 3 8 3s8-1.3 8-3v-9M4 14.5c0 1.7 3.6 3 8 3s8-1.3 8-3",
+    image:
+      "M3 5.5h18v13H3v-13Zm3.5 10 3-3.5 2.5 3 3.5-4.5 3.5 5M8.8 9.2a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z",
+    play: "M8 5.5v13l11-6.5-11-6.5Z",
   };
   return (
     <svg
@@ -60,6 +77,60 @@ export function Icon({ name = "grid", size = 16 }: { name?: string; size?: numbe
     </svg>
   );
 }
+/** A refresh icon that turns while `spinning` and always finishes the turn it is in. */
+export function RefreshIcon({ spinning }: { spinning: boolean }) {
+  const [turning, setTurning] = useState(false);
+  useEffect(() => {
+    if (spinning) setTurning(true);
+  }, [spinning]);
+  return (
+    <span
+      className={`${s.spinner} ${turning ? s.spinning : ""}`}
+      onAnimationIteration={() => {
+        if (!spinning) setTurning(false);
+      }}
+    >
+      <Icon name="refresh" />
+    </span>
+  );
+}
+/** A glass block that glides under the selected (`aria-pressed` / `aria-selected`) item of its bar. */
+export function SegmentThumb() {
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const thumb = ref.current;
+    const bar = thumb?.parentElement;
+    if (!thumb || !bar) return;
+    const place = () => {
+      const active = bar.querySelector<HTMLElement>(
+        '[aria-pressed="true"], [aria-selected="true"]',
+      );
+      thumb.style.opacity = active ? "1" : "0";
+      if (!active) return;
+      thumb.style.width = `${active.offsetWidth}px`;
+      thumb.style.height = `${active.offsetHeight}px`;
+      thumb.style.transform = `translate(${active.offsetLeft}px, ${active.offsetTop}px)`;
+    };
+    place();
+    // Glide only after the first placement, so the thumb never sweeps in on mount.
+    const ready = window.setTimeout(() => thumb.classList.add(s.segmentReady), 50);
+    const changes = new MutationObserver(place);
+    changes.observe(bar, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributeFilter: ["aria-pressed", "aria-selected"],
+    });
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    resize?.observe(bar);
+    return () => {
+      window.clearTimeout(ready);
+      changes.disconnect();
+      resize?.disconnect();
+    };
+  }, []);
+  return <span ref={ref} className={s.segmentThumb} aria-hidden="true" />;
+}
 export function PageTitle({
   title,
   description,
@@ -76,6 +147,7 @@ export function PageTitle({
         {description && <p>{description}</p>}
       </div>
       <div className={s.actions}>{actions}</div>
+      <ToastRegion />
     </div>
   );
 }
@@ -134,11 +206,13 @@ export function Badge({
 export function Panel({
   title,
   hint,
+  action,
   children,
   className = "",
 }: {
   title: string;
   hint?: string;
+  action?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
@@ -147,6 +221,7 @@ export function Panel({
       <div className={s.panelHeading}>
         <h2>{title}</h2>
         {hint && <span>{hint}</span>}
+        {action}
       </div>
       {children}
     </section>
@@ -216,6 +291,8 @@ export function Drawer({
           </button>
         </div>
         <div className={s.drawerBody}>{children}</div>
+        {/* Toasts raised while the drawer is open sit over it; a closing drawer hands them back. */}
+        {!exiting && <ToastRegion />}
       </section>
     </dialog>
   );
@@ -251,17 +328,17 @@ export function ClearLogs({ onClose, onDone }: { onClose: () => void; onDone: ()
       >
         <label className={s.field}>
           {t("logs.clear.scope")}
-          <select
+          <Select
             value={scope}
             disabled={busy}
-            onChange={(e) => {
-              setScope(e.target.value as "details" | "all");
+            onChange={(value) => {
+              setScope(value as "details" | "all");
               setConfirmation("");
             }}
           >
             <option value="details">{t("logs.clear.detailsOnly")}</option>
             <option value="all">{t("logs.clear.everything")}</option>
-          </select>
+          </Select>
         </label>
         <div className={s.warning}>
           <Icon name="alert" />

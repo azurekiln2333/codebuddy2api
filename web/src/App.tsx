@@ -1,16 +1,28 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
-import { endSession, establishSession, errorMessage, SSO_LOGIN_URL, useSession } from "./api";
+import {
+  api,
+  list,
+  object,
+  endSession,
+  establishSession,
+  errorMessage,
+  SSO_LOGIN_URL,
+  useSession,
+} from "./api";
 import { Drawer, ErrorNotice, Icon } from "./components";
 import { Dashboard } from "./pages/Dashboard";
 import { Models } from "./pages/Models";
 import { Credentials } from "./pages/Credentials";
+import { Keys } from "./pages/Keys";
 import { Logs } from "./pages/Logs";
+import { Media } from "./pages/Media";
 import { Settings } from "./pages/Settings";
 import { Storage } from "./pages/Storage";
+import { Updates } from "./pages/Updates";
 import { Appearance } from "./appearance";
 import s from "./ui.module.scss";
-import { LanguageProvider, useT } from "./i18n";
+import { LanguageProvider, chooseLanguage, serverPreference, useT } from "./i18n";
 
 // Two reference-style groups: operational console surfaces first, then the
 // management and access surfaces.
@@ -22,14 +34,17 @@ const navigationGroups = [
       ["", "nav.overview", "grid"],
       ["/credentials", "nav.credentials", "key"],
       ["/models", "nav.models", "model"],
+      ["/media", "nav.media", "image"],
     ],
   },
   {
     title: "nav.caption.manage",
     items: [
+      ["/keys", "nav.keys", "key"],
       ["/logs", "nav.logs", "logs"],
       ["/storage", "nav.storage", "database"],
       ["/settings", "nav.settings", "settings"],
+      ["/updates", "nav.updates", "up"],
     ],
   },
 ];
@@ -99,6 +114,14 @@ function Shell() {
   const user = useSession((state) => state.user);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => {
+    // Cached server-side; the gateway checks releases in the background.
+    void api
+      .get<unknown>("/update")
+      .then((response) => setUpdateAvailable(object(response.data).update_available === true))
+      .catch(() => undefined);
+  }, []);
   const [menuOpen, setMenuOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -177,7 +200,8 @@ function Shell() {
               {group.tag && <span>{t(group.tag)}</span>}
             </p>
             {group.items.map(([path, labelKey, icon]) => {
-              const label = t(labelKey);
+              const flagged = path === "/updates" && updateAvailable;
+              const label = flagged ? `${t(labelKey)} · ${t("updates.available")}` : t(labelKey);
               return (
                 <NavLink
                   key={path}
@@ -196,7 +220,8 @@ function Shell() {
                   className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
                 >
                   <Icon name={icon} size={17} />
-                  <span className={s.navText}>{label}</span>
+                  <span className={s.navText}>{t(labelKey)}</span>
+                  {flagged && <span className={s.navDot} />}
                 </NavLink>
               );
             })}
@@ -415,9 +440,13 @@ export function AppRoutes() {
           <Route index element={<Dashboard />} />
           <Route path="models" element={<Models />} />
           <Route path="credentials" element={<Credentials />} />
+          <Route path="keys" element={<Keys />} />
           <Route path="logs" element={<Logs />} />
+          <Route path="media" element={<Media />} />
           <Route path="settings" element={<Settings />} />
           <Route path="storage" element={<Storage />} />
+          <Route path="updates" element={<Updates />} />
+          <Route path="updates/:tag" element={<Updates />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard/" replace />} />
@@ -428,6 +457,19 @@ export default function App() {
   useEffect(() => {
     void establishSession();
   }, []);
+  const status = useSession((state) => state.status);
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    // The stored language wins over the browser cache once the session is known.
+    void api
+      .get<unknown>("/settings")
+      .then((response) => {
+        const data = object(response.data);
+        const stored = list(data.items).find((item) => item.key === "language");
+        if (stored) chooseLanguage(serverPreference(stored.value));
+      })
+      .catch(() => undefined);
+  }, [status]);
   return (
     <LanguageProvider>
       <AppRoutes />

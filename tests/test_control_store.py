@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -22,11 +23,48 @@ class ControlStoreTests(unittest.TestCase):
     def test_reopen_and_schema(self):
         state = self.store.update_settings({"max_images": 3}, 0)
         self.assertEqual(state["revision"], 1)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], ControlStore.SCHEMA_VERSION)
         other = ControlStore(self.path)
         self.addCleanup(other.close)
         self.assertEqual(other.snapshot()["settings"], {"max_images": 3})
+
+    def test_v2_database_upgrades_api_keys_schema(self):
+        self.store.update_settings({"max_images": 3}, 0)
+        self.store.close()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("DROP INDEX api_keys_single_admin")
+            db.execute("DROP TABLE api_keys")
+            db.execute("PRAGMA user_version=2")
+        reopened = ControlStore(self.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.snapshot()["settings"], {"max_images": 3})
+        with closing(sqlite3.connect(self.path)) as db, db:
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertIn("api_keys", {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")})
+            self.assertTrue(db.execute(
+                "SELECT 1 FROM pragma_index_list('api_keys') WHERE name='api_keys_single_admin' AND \"unique\"=1"
+            ).fetchone())
+
+    def test_corrupt_api_keys_schema_is_rejected_without_deleting_rows(self):
+        from app.api_keys import KeyStore
+        for mode in ("column", "index"):
+            with self.subTest(mode=mode):
+                path = self.root / f"corrupt-{mode}.sqlite3"
+                store = ControlStore(path)
+                KeyStore(store).create(name="preserved", kind="standard")
+                store.close()
+                with closing(sqlite3.connect(path)) as db, db:
+                    if mode == "column":
+                        db.execute("ALTER TABLE api_keys DROP COLUMN version")
+                    else:
+                        db.execute("DROP INDEX api_keys_single_admin")
+                        db.execute("CREATE INDEX api_keys_single_admin ON api_keys(type)")
+                with self.assertRaisesRegex(ValueError, "api_keys (表|索引)结构不匹配"):
+                    ControlStore(path)
+                with closing(sqlite3.connect(path)) as db, db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM api_keys").fetchone()[0], 1)
 
     def test_snapshot_is_detached(self):
         self.store.update_model("real", {"public_id": "public", "credential_ids": ["fingerprint"]}, 0)
@@ -122,7 +160,7 @@ class ControlStoreTests(unittest.TestCase):
         for values in ({"api_key": "secret"}, {"auth_dir": "/private"}, {"accessToken": "secret"}, {"max_images": True}):
             with self.assertRaises(ValueError):
                 self.store.update_settings(values, 1)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             raw = db.execute("SELECT payload FROM control").fetchone()[0]
         self.assertNotIn("secret", raw)
         self.assertEqual(self.store.snapshot()["revision"], 1)
@@ -137,11 +175,11 @@ class ControlStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControlStore(empty)
         unknown = self.root / "unknown.sqlite3"
-        with sqlite3.connect(unknown) as db:
+        with closing(sqlite3.connect(unknown)) as db, db:
             db.execute("PRAGMA user_version=999")
         with self.assertRaises(ValueError):
             ControlStore(unknown)
-        with sqlite3.connect(unknown) as db:
+        with closing(sqlite3.connect(unknown)) as db, db:
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 999)
 
     def test_setting_precedence_and_source_redaction(self):
@@ -155,7 +193,8 @@ class ControlStoreTests(unittest.TestCase):
         self.assertEqual(items["image_policy"]["source"], "environment")
         self.assertIsNone(items["api_key"]["value"])
         self.assertIsNone(items["auth_dir"]["value"])
-        for invalid in ({"usd_rate": float("nan")}, {"port": 65536}, {"audit_diagnostic_bytes": 8193}):
+        for invalid in ({"usd_rate": float("nan")}, {"port": 65536},
+                        {"audit_diagnostic_bytes": 4 * 1024 * 1024 + 1}):
             with self.assertRaises(ValueError):
                 validate_settings(invalid)
 

@@ -5,16 +5,19 @@ Use your **WorkBuddy / CodeBuddy (Tencent)** subscription as local **OpenAI- and
 [中文文档](README.zh-CN.md)
 
 - Chat Completions, Responses and Anthropic Messages, with tool calling and streaming.
+- Compatible tool-schema and channel handling across all three inference protocols.
 - Built-in **WebUI** with organization SSO, models, credentials, logs and settings — no separate UI or authentication-gateway deployment.
 - Automatic multi-account routing across domestic and international sites, with credential refresh.
-- Per-account automation: domestic check-in then Buddy travel by default, with independent switches; international check-in is opt-in.
+- Per-account automation: domestic personal accounts check in and dispatch Buddy travel by default, with independent switches; international check-in is opt-in. The growth center is personal-only: finished tasks are claimed automatically, with per-task switches for behavior chains; enterprise accounts are excluded.
+
+Development includes a simulated upstream without real credentials; the SSO console is tested with the native OIDC fixture. See [development and tests](docs/development.md).
 
 ## Quick start
 
 Requires Git and Docker Compose. Publish this fork using its GitHub or CNB workflow, then deploy that repository's image. The application image contains the backend and compiled console.
 
 ```bash
-git clone https://github.com/<your-account>/codebuddy2api.git
+git clone https://github.com/azurekiln2333/codebuddy2api.git
 cd codebuddy2api
 cp .env.example .env
 ```
@@ -22,7 +25,7 @@ cp .env.example .env
 Edit `.env`: choose your published image, set a random inference API key, and configure the console's OIDC client. Register `<PUBLIC_ORIGIN>/sso/callback` at your identity provider. Preserve an existing `.env` on upgrades:
 
 ```dotenv
-CODEBUDDY2API_IMAGE=ghcr.io/<your-account>/codebuddy2api:latest
+CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest
 CODEBUDDY2API_KEY=replace-with-a-random-inference-key
 CODEBUDDY2API_SSO_ENABLED=true
 PUBLIC_ORIGIN=https://api.example.com
@@ -36,13 +39,14 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-`latest` tracks stable releases; pin a published version tag for reproducible deployments. Image features belong to that version, not to unmerged source branches.
+Compose pulls `latest` by default (`CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest`); images also publish the release version (for example `1.5.4`) and `edge` for `main`. Pin a version tag for reproducible deployments; image features belong to that version, not to unmerged source branches.
 
 First use:
 
 1. Open **`<PUBLIC_ORIGIN>/dashboard/`** and sign in through your organization identity provider with an authorized administrator account.
-2. In **Credentials**, add a domestic or international account through browser login, or import an `.info` file.
-3. In **Models**, find an available model and use its public ID in your client.
+2. In **Credentials**, add a domestic or international account through browser login, import an `.info` file, or paste refresh tokens for a chosen endpoint.
+3. In **Keys**, create an inference key for each client and assign its model, IP, expiry and rate limits.
+4. In **Models**, find an available model and use its public ID in your client.
 
 The template binds to localhost. Serve the configured public origin over HTTPS using your reverse proxy, and keep the complete `auth/` data directory. The [deployment guide](docs/deployment.md) covers CNB images, local builds, scoped automatic updates and version rollback.
 
@@ -60,10 +64,17 @@ It selects this application's labeled containers. Follow `latest` for stable upd
 |----------|----------|
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
+| MCP (web_search + web_fetch) | `http://127.0.0.1:8787/v1/mcp` |
+| REST web search / fetch | `POST http://127.0.0.1:8787/v1/search` / `POST http://127.0.0.1:8787/v1/fetch` |
+| Image & video generation | `POST http://127.0.0.1:8787/v1/images/generations` / `POST /v1/images/edits` / `POST /v1/videos` |
 
-- **API key:** `CODEBUDDY2API_KEY`, used by inference clients. The browser console uses its SSO session.
+- Media generation is billed per upstream credit and only routes to verified account products; see [Media generation](docs/clients.md#media-generation).
+
+- **API key:** use a key created in **Keys**, or the externally configured admin key. The WebUI management Cookie cannot call `/v1/*`. The browser console signs in independently through its OIDC/SSO session.
 - **Model:** a public ID from the WebUI or `GET /v1/models`.
 - All accounts share these URLs; no region parameter is needed. Anthropic SDKs append `/v1/messages` themselves, so leave it out of the Base URL.
+- The search and fetch endpoints never call a model. Declaring Anthropic `web_search_*` / `web_fetch_*` or OpenAI `web_search` server tools makes the gateway execute them itself. See [Web search and fetch](docs/clients.md#web-search-and-fetch).
+- Tool parameters: across all three inference protocols, an empty parameter root becomes an object schema. Legacy field maps with boolean `required` flags are wrapped in `properties`, with required names collected at the root. A schema keyword such as `pattern` still counts as a field name when it holds a field. Standard schemas, roots with `$`/`x-` extensions, and nested schemas are left untouched.
 
 [Codex CLI, Claude Code / CC Switch and other client examples →](docs/clients.md)
 
@@ -75,6 +86,7 @@ It selects this application's labeled containers. Follow `latest` for stable upd
 ├── app/                 # Management API, credentials, catalogs, audit and policy modules
 ├── web/                 # WebUI frontend (React/TypeScript; build output served by the gateway)
 ├── tests/               # Offline regression suites
+├── preview/             # Development preview: real gateway, simulated upstream, synthetic accounts
 ├── docs/                # User guides, English and Chinese
 ├── examples/            # Client configuration examples
 ├── scripts/             # Version checks, release packaging and dependency-lock tooling

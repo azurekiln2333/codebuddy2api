@@ -143,7 +143,11 @@ main:
             for ref in $REFS; do tags="$tags --tag $ref"; done
             # Refs come from the shared resolver: stable tags include `latest`,
             # prereleases only publish their exact and commit tags.
-            docker buildx build --platform "$platforms" --push $tags .
+            channel=stable
+            if [ "$PRERELEASE" = "true" ]; then channel=edge; fi
+            docker buildx build --platform "$platforms" --push $tags \
+              --build-context webui=web/dist \
+              --build-arg BUILD_CHANNEL="$channel" --build-arg BUILD_COMMIT="$CNB_COMMIT" .
             echo "published: $REFS"
         - name: prepare-release-metadata
           script: |
@@ -160,3 +164,4 @@ main:
             attachments:
               - dist/$RELEASE_ARCHIVE
               - dist/$RELEASE_ARCHIVE.sha256
+              - dist/SHA256SUMS

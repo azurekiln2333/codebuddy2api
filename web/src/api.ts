@@ -214,6 +214,9 @@ export async function endSession() {
     throw error;
   }
 }
+export function updateCsrf(token: string) {
+  useSession.setState({ csrf: token });
+}
 // Session-level response cache for heavy pages (model routing): reopening the
 // page renders the last snapshot instantly while a fresh fetch replaces it.
 const resourceCache = new Map<string, unknown>();
@@ -230,11 +233,13 @@ export function useResource<T>(
     path: string;
     data: T | null;
     loading: boolean;
+    refreshing: boolean;
     error: string | null;
   }>({
     path,
     data: cached === undefined ? null : normalize(cached),
     loading: cached === undefined,
+    refreshing: true,
     error: null,
   });
   const [revision, setRevision] = useState(0);
@@ -251,14 +256,20 @@ export function useResource<T>(
           : cachedForPath === undefined
             ? null
             : normalize(cachedForPath);
-      return { path, data, loading: data === null, error: null };
+      return { path, data, loading: data === null, refreshing: true, error: null };
     });
     void api
       .get<unknown>(path, { signal: controller.signal })
       .then((response) => {
         if (controller.signal.aborted) return;
         if (options?.cache) resourceCache.set(path, response.data);
-        setState({ path, data: normalize(response.data), loading: false, error: null });
+        setState({
+          path,
+          data: normalize(response.data),
+          loading: false,
+          refreshing: false,
+          error: null,
+        });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -266,6 +277,7 @@ export function useResource<T>(
           path,
           data: prev.path === path ? prev.data : null,
           loading: false,
+          refreshing: false,
           error: errorMessage(error),
         }));
       });
@@ -276,14 +288,23 @@ export function useResource<T>(
   return {
     data: currentData,
     loading: state.path === path ? state.loading : cached === undefined,
+    // True during every fetch, including reloads that keep the previous data on screen.
+    refreshing: state.path === path ? state.refreshing : true,
     error: state.path === path ? state.error : null,
     reload,
   };
 }
+export type ModelRoute = {
+  upstream_id: string;
+  weight: number | null;
+  enabled: boolean;
+  source: "builtin" | "cloud" | "manual";
+};
 export type ModelRule = {
   id: string;
   public_id: string;
   upstream_id?: string;
+  routes?: ModelRoute[];
   custom?: boolean;
   available?: boolean;
   enabled: boolean;
@@ -293,10 +314,24 @@ export type ModelRule = {
   credential_ids: string[];
   credits?: unknown;
   credits_by_profile?: unknown;
+  credits_override?: Record<string, number>;
+  rate_details?: unknown;
   capabilities?: unknown;
   limits?: unknown;
   metadata_by_profile?: unknown;
+  media_kinds?: string[];
+  media_sources?: string[];
+  media_defaults?: string[];
+  embedding?: boolean;
+  rerank?: boolean;
 };
+function rateOverride(value: unknown): Record<string, number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as RecordValue).filter(
+    (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+  );
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
 export function modelResponse(value: unknown): {
   revision: number;
   models: ModelRule[];
@@ -330,6 +365,18 @@ export function modelResponse(value: unknown): {
       region: typeof m.region === "string" ? m.region : "",
       profile: typeof m.profile === "string" ? m.profile : "",
       credential_ids: m.credential_ids as string[],
+      routes: Array.isArray(m.routes)
+        ? (m.routes.filter(
+            (route): route is RecordValue =>
+              !!route &&
+              typeof route === "object" &&
+              !Array.isArray(route) &&
+              typeof route.upstream_id === "string" &&
+              typeof route.enabled === "boolean" &&
+              (route.weight === null || typeof route.weight === "number"),
+          ) as ModelRoute[])
+        : undefined,
+      credits_override: rateOverride(m.credits_override),
     };
   });
   return {
@@ -346,6 +393,64 @@ export function modelResponse(value: unknown): {
         : undefined,
   };
 }
+export type CatalogProfileVersions = {
+  accounts: number;
+  distinct: number;
+  versions: { models: number; accounts: number }[];
+};
+export type CatalogScan = {
+  status: "idle" | "running" | "completed" | "failed";
+  total: number;
+  completed: number;
+  success: number;
+  failed: number;
+  differences: number;
+  started_at: number | null;
+  finished_at: number | null;
+  error: string | null;
+  profiles: Record<string, CatalogProfileVersions>;
+  accounts: RecordValue[];
+};
+export function catalogScanResponse(value: unknown): CatalogScan {
+  const data = object(value, "目录扫描");
+  const count = (field: string) => {
+    const parsed = number(data[field]);
+    if (parsed === null || parsed < 0) throw new Error(`目录扫描缺少 ${field}`);
+    return parsed;
+  };
+  const status = data.status;
+  if (status !== "idle" && status !== "running" && status !== "completed" && status !== "failed")
+    throw new Error("目录扫描状态无效");
+  return {
+    status,
+    total: count("total"),
+    completed: count("completed"),
+    success: count("success"),
+    failed: count("failed"),
+    differences: count("differences"),
+    started_at: number(data.started_at),
+    finished_at: number(data.finished_at),
+    error: typeof data.error === "string" && data.error ? data.error : null,
+    profiles: parseCatalogProfiles(data.profiles),
+    accounts: Array.isArray(data.accounts) ? list(data.accounts, "目录扫描账号") : [],
+  };
+}
+function parseCatalogProfiles(value: unknown): Record<string, CatalogProfileVersions> {
+  if (!value || typeof value !== "object") return {};
+  const profiles: Record<string, CatalogProfileVersions> = {};
+  for (const [name, row] of Object.entries(value as Record<string, unknown>)) {
+    const item = object(row, "目录版本");
+    profiles[name] = {
+      accounts: number(item.accounts) ?? 0,
+      distinct: number(item.distinct) ?? 0,
+      versions: list(item.versions, "目录版本列表").map((entry) => {
+        const version = object(entry, "目录版本条目");
+        return { models: number(version.models) ?? 0, accounts: number(version.accounts) ?? 0 };
+      }),
+    };
+  }
+  return profiles;
+}
 export type Credential = RecordValue & { id: string; name: string | null };
 export function credentialResponse(value: unknown): Credential[] {
   return list(object(value).credentials, "凭证").map((c) => {
@@ -356,14 +461,20 @@ export function credentialResponse(value: unknown): Credential[] {
       "auto_checkin",
       "auto_travel",
       "auto_daily_chat",
+      "auto_growth",
       "travel_supported",
       "trial_supported",
       "daily_chat_supported",
+      "growth_supported",
     ])
       if (c[field] !== undefined && typeof c[field] !== "boolean")
         throw new Error("自动任务状态必须为布尔值");
+    if (c.restricted !== undefined && typeof c.restricted !== "boolean")
+      throw new Error("官方限制状态必须为布尔值");
     for (const field of ["checkin", "travel", "trial", "daily_chat"])
       if (c[field] !== undefined && c[field] !== null) object(c[field], "自动任务结果");
+    if (c.growth_auto !== undefined && c.growth_auto !== null)
+      object(c.growth_auto, "成长任务开关");
     return { ...c, id, name: typeof name === "string" && !/[\\/]/.test(name) ? name : null };
   });
 }

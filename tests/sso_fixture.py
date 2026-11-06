@@ -351,6 +351,7 @@ class _Gateway:
         }
         self.admin_credential_inventory = Mock(return_value=[])
         self.admin_model_inventory = Mock(return_value=[])
+        self.catalog_status = Mock(return_value={})
         self.admin_model_preview = Mock(return_value={"candidates": [], "excluded": []})
         self.admin_set_credential_enabled = Mock()
         self.admin_apply_settings = Mock()

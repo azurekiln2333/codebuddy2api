@@ -5,6 +5,7 @@ import { AppRoutes, Guard } from "./App";
 import { api, useSession, type ModelRule } from "./api";
 import { CLEAR_CONFIRMATION, ClearLogs } from "./components";
 import { ModelEditor, validateRule } from "./pages/Models";
+import { choose } from "./test-utils";
 const rule: ModelRule = {
   id: "upstream",
   public_id: "public",
@@ -104,7 +105,7 @@ describe("destructive warnings", () => {
     const close = vi.fn();
     const done = vi.fn();
     render(<ClearLogs onClose={close} onDone={done} />);
-    fireEvent.change(screen.getByLabelText("清理范围"), { target: { value: "all" } });
+    choose(screen.getByLabelText("清理范围"), "all");
     const submit = screen.getByRole("button", { name: "确认不可撤销的清理" });
     expect(submit).toHaveProperty("disabled", true);
     expect(screen.getByText(/将永久删除全部请求明细/)).toBeTruthy();
@@ -144,7 +145,7 @@ describe("destructive warnings", () => {
     const close = vi.fn();
     const done = vi.fn();
     render(<ClearLogs onClose={close} onDone={done} />);
-    fireEvent.change(screen.getByLabelText("清理范围"), { target: { value: "all" } });
+    choose(screen.getByLabelText("清理范围"), "all");
     const confirmation = screen.getByLabelText(`输入“${CLEAR_CONFIRMATION}”`);
     fireEvent.change(confirmation, { target: { value: CLEAR_CONFIRMATION } });
     fireEvent.click(screen.getByRole("button", { name: "确认不可撤销的清理" }));

@@ -16,6 +16,7 @@ import converter
 from app import trial_rewards, trial_management, settings
 from app.control_store import ControlStore
 from tests import test_credential_actions as fixtures
+from tests.admin_session import credentials
 from tests.test_trial_rewards import headers, mock_http
 
 
@@ -99,7 +100,7 @@ import converter, json, sys
 from unittest.mock import patch
 sys.argv = ['converter.py', '--skip-check', '--auto-trial', 'true']
 with patch.object(converter.threading.Thread, 'start'), patch.object(converter, 'seed_credentials'), \\
-     patch.object(converter.uvicorn, 'run'), patch.object(converter.trial_rewards, 'claim_trial') as claim:
+     patch.object(converter, 'run_server'), patch.object(converter.trial_rewards, 'claim_trial') as claim:
     converter.main()
     assert not converter.CONFIG.get('auto_trial')
     assert converter.CONFIG.get('trial_ledger') is not None
@@ -107,10 +108,13 @@ with patch.object(converter.threading.Thread, 'start'), patch.object(converter, 
 print(json.dumps({'manual_only': True}))
 '''
         env = {'PATH': os.defpath, 'PYTHONPATH': str(Path(converter.__file__).parent),
+               'PYTHONUTF8': '1',
                'HOME': str(self.root), 'CODEBUDDY_AUTH_DIR': str(self.root / 'startup-auth'),
                'CODEBUDDY2API_KEY': 'synthetic', 'CODEBUDDY2API_AUTO_TRIAL': 'true'}
+        if os.name == 'nt':
+            env['SYSTEMROOT'] = os.environ['SYSTEMROOT']
         process = subprocess.run([sys.executable, '-B', '-c', source], cwd=self.root,
-                                 env=env, capture_output=True, text=True, timeout=10)
+                                 env=env, capture_output=True, text=True, encoding='utf-8', timeout=10)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertIn('AUTO_TRIAL / --auto-trial 已停用', process.stderr)
         self.assertTrue(json.loads(process.stdout)['manual_only'])
@@ -245,10 +249,11 @@ print(json.dumps({'manual_only': True}))
         self.claim.assert_called_once()
 
     def test_manual_post_requires_auth_and_csrf(self):
-        self.client.headers.pop('Authorization')
+        self.client.headers.pop('Authorization', None)
+        self.client.cookies.clear()
         self.assertEqual(self.client.post(self.url + '/trial').status_code, 401)
         login = self.client.post('/admin/session', headers={'Origin': 'https://testserver'},
-                                 json={'api_key': 'synthetic-management-key'})
+                                 json=credentials('synthetic-management-key'))
         self.assertEqual(login.status_code, 200)
         self.assertEqual(self.client.post(self.url + '/trial').status_code, 403)
         self.claim.assert_not_called()

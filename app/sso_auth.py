@@ -340,6 +340,11 @@ class SSOService:
         session.last_seen_at = time.time()
         return session
 
+    def revoke_all(self) -> None:
+        """Revoke every session, including tokens held by pending refreshes."""
+        for session in tuple(self.sessions.values()):
+            self._forget(session)
+
     def resolve(self, request: Request) -> SSOSession | None:
         return self._resolve(request)
 

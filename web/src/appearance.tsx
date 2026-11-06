@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
+import { api, object, useSession } from "./api";
 import { Drawer, DrawerPresence, Icon } from "./components";
 import { chooseLanguage, languagePreference, useT, type LangPref } from "./i18n";
 import s from "./ui.module.scss";
@@ -67,6 +68,19 @@ export function chooseAppearance(value: Partial<{ mode: Mode; palette: Palette }
   }
   useAppearance.setState({ ...next, persisted });
 }
+/** Save through the API as well, so the CLI and other browsers share the choice. */
+function persistLanguage(value: LangPref) {
+  if (useSession.getState().status !== "authenticated") return;
+  void api
+    .get<unknown>("/settings")
+    .then((response) =>
+      api.patch("/settings", {
+        values: { language: value === "system" ? "auto" : value },
+        revision: object(response.data).revision,
+      }),
+    )
+    .catch(() => undefined);
+}
 export function Appearance() {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -128,7 +142,10 @@ export function Appearance() {
                     name="ui-language"
                     value={value}
                     checked={languagePreference() === value}
-                    onChange={() => chooseLanguage(value)}
+                    onChange={() => {
+                      chooseLanguage(value);
+                      persistLanguage(value);
+                    }}
                   />
                   <span className={s.langDot}>{label}</span>
                 </label>

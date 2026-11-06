@@ -14,8 +14,9 @@ import threading
 import time
 import uuid
 from typing import Any
+from urllib.parse import quote
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 _CLEANUP_BATCH = 128
 _CLEANUP_SECONDS = 0.05
 METRICS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
@@ -43,6 +44,32 @@ def safe_agent(value: Any) -> str | None:
         return None
     return None if _SECRET.search(cleaned) else cleaned
 
+
+def safe_diagnostic(value: Any, limit: int = 256) -> str | None:
+    """Short printable upstream diagnostic text; collapsed to one line and secret-checked."""
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split())[:limit]
+    if not cleaned or not cleaned.isprintable() or _SECRET.search(cleaned):
+        return None
+    return cleaned
+
+
+_UPSTREAM_BODY_LIMIT = 256 * 1024
+_JWT = re.compile(r"eyJ[A-Za-z0-9_-]{10,}")
+
+
+def safe_body(value: Any, limit: int = _UPSTREAM_BODY_LIMIT) -> str | None:
+    """Bounded upstream error JSON; redacted upstream, re-checked here for token leakage."""
+    if not isinstance(value, str) or not value:
+        return None
+    if len(value) > limit:
+        value = value[:limit] + "...[truncated]"
+    if _JWT.search(value):
+        return None
+    return value
+
+
 def number(value: Any) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -58,12 +85,48 @@ def safe_attempt(value: Any) -> dict:
     result = {}
     for key in ("stage", "code", "error_code", "model", "upstream_model", "profile",
                 "credential", "usage_source", "outcome", "consent_source", "agreement_revision", "conversation_id", "request_id",
-                "attempt_id", "upstream_request_id", "session_source"):
+                "attempt_id", "upstream_request_id", "session_source", "upstream_code"):
         clean = safe_label(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    for key in ("upstream_msg",):
+        clean = safe_diagnostic(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    for key in ("upstream_body",):
+        clean = safe_body(value.get(key))
         if clean is not None:
             result[key] = clean
     for key in ("status_code", "duration_ms", "attempt", "retry_after", "max_attempts", "total_tokens",
                 "attempt_index", "dropped", "merged_runs", "merged_messages"):
+        clean = number(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    return result
+
+
+CREDIT_CHANGES = ("income", "consume", "expire", "adjust")
+
+
+def safe_credit_change(value: Any) -> dict:
+    """Signed credit deltas plus the upstream package label; never account names or tokens."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key in ("credential", "package_code"):
+        clean = safe_label(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    source = value.get("source")
+    # Package labels are short upstream display text, often Chinese, so they cannot be identifiers.
+    if (isinstance(source, str) and 0 < len(source) <= 60 and source.isprintable()
+            and not _SECRET.search(source)):
+        result["source"] = source
+    delta = value.get("delta")
+    if not isinstance(delta, bool) and isinstance(delta, (int, float)) and math.isfinite(delta) \
+            and abs(delta) <= 1e12:
+        result["delta"] = delta
+    for key in ("balance", "expires_at"):
         clean = number(value.get(key))
         if clean is not None:
             result[key] = clean
@@ -110,16 +173,18 @@ def _secure_path(path: str | os.PathLike) -> Path:
 class AuditStore:
     # 一次瞬时写失败只让降级标记保持一天；终身计数仍如实上报，不随时间消失。
     DEGRADED_WINDOW_SECONDS = 24 * 3600
+    TRANSIENT_WINDOW_SECONDS = 3600
 
     def __init__(self, path, max_bytes=256 * 1024 * 1024, retention_days=30,
-                 preview_limit=8192):
+                 preview_limit=1536 * 1024):
         self._validate(max_bytes, retention_days, preview_limit)
         self.max_bytes, self.retention_days, self.preview_limit = max_bytes, retention_days, preview_limit
         self._lock = threading.Lock()
         self._archive_lock = threading.Lock()
         self._health_lock = threading.Lock()
-        self.failure_count = self.dropped_records = 0
+        self.failure_count = self.dropped_records = self.transient_count = 0
         self.failure_events: list[float] = []
+        self.transient_events: list[float] = []
         self.last_failure_at: float | None = None
         self.last_error = None
         self._closed = False
@@ -135,21 +200,23 @@ class AuditStore:
             self._db.execute("BEGIN IMMEDIATE")
             version = self._db.execute("PRAGMA user_version").fetchone()[0]
             tables = self._db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            if version not in (0, 1, 2, SCHEMA_VERSION) or (version == 0 and tables):
+            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION) or (version == 0 and tables):
                 raise ValueError("unsupported audit schema")
             self._db.execute("CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL, detail_generation INTEGER NOT NULL, cleared_at REAL NOT NULL)")
             self._db.execute("INSERT OR IGNORE INTO state VALUES(1,0,0,0)")
             self._db.execute("CREATE TABLE IF NOT EXISTS ingest (id TEXT PRIMARY KEY, kind TEXT NOT NULL, created_at REAL NOT NULL)")
             self._db.execute("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, started_at REAL NOT NULL, model TEXT, profile TEXT, credential TEXT, outcome TEXT, status_code INTEGER, payload TEXT NOT NULL, logical_bytes INTEGER NOT NULL)")
             self._db.execute("CREATE INDEX IF NOT EXISTS requests_time ON requests(started_at,id)")
-            self._db.execute("CREATE TABLE IF NOT EXISTS attempts (request_id TEXT NOT NULL, ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(request_id,ordinal))")
             self._db.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, started_at REAL NOT NULL, kind TEXT NOT NULL, action TEXT, payload TEXT NOT NULL, logical_bytes INTEGER NOT NULL)")
             self._db.execute("CREATE INDEX IF NOT EXISTS events_time ON events(started_at,id)")
             self._init_accounting()
+            self._migrate_attempts()
             for table in ("stats_hourly", "stats_daily", "stats_totals"):
                 self._db.execute(f"CREATE TABLE IF NOT EXISTS {table} (bucket INTEGER NOT NULL, dimension TEXT NOT NULL, dimension_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(bucket,dimension,dimension_key))")
             self._migrate_ingest_time()
             self._migrate_client_ip()
+            self._migrate_duration()
+            self._migrate_api_key()
             self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             self._epoch = self._db.execute("SELECT epoch FROM state").fetchone()[0]
             self._db.execute("COMMIT")
@@ -176,6 +243,43 @@ class AuditStore:
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS requests_client ON requests(client_ip, started_at)")
 
+    def _migrate_duration(self):
+        # Additive v4 migration: a covered (started_at, duration_ms) index keeps
+        # the dashboard P95 scan off per-row json_extract payload parsing.
+        columns = [row[1] for row in self._db.execute("PRAGMA table_info(requests)").fetchall()]
+        if "duration_ms" not in columns:
+            self._db.execute("ALTER TABLE requests ADD COLUMN duration_ms REAL")
+            self._db.execute("UPDATE requests SET duration_ms=json_extract(payload,'$.duration_ms')")
+        self._db.execute("CREATE INDEX IF NOT EXISTS requests_duration ON requests(started_at,duration_ms)")
+
+    def _migrate_api_key(self):
+        columns = [row[1] for row in self._db.execute("PRAGMA table_info(requests)").fetchall()]
+        if "api_key" not in columns:
+            self._db.execute("ALTER TABLE requests ADD COLUMN api_key TEXT")
+        self._db.execute("CREATE INDEX IF NOT EXISTS requests_api_key ON requests(api_key, started_at)")
+
+    def _migrate_attempts(self):
+        # Attempts live only in the request payload; the per-row copy was never read.
+        if not self._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attempts'").fetchone():
+            return
+        # Recount without the duplicated attempts; audit_requests_update keeps detail_accounting in step.
+        self._db.execute("UPDATE requests SET logical_bytes=length(CAST(payload AS BLOB))+256")
+        # The old delete trigger cascades into the table dropped below.
+        self._db.execute("DROP TRIGGER IF EXISTS audit_requests_delete")
+        self._init_accounting()
+        self._db.execute("DROP TABLE attempts")
+
+    def _open_read(self):
+        """Fresh read-only WAL snapshot per call; None falls back to the write path."""
+        try:
+            conn = sqlite3.connect(f"file:{quote(str(self.path))}?mode=ro", uri=True, timeout=5,
+                                   check_same_thread=False, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            return conn
+        except sqlite3.Error:
+            return None
+
     def _init_accounting(self):
         # Additive v1 migration: scan legacy details only once, under the same
         # write transaction that installs triggers. Reopening never recounts.
@@ -184,8 +288,7 @@ class AuditStore:
             self._db.execute("INSERT INTO detail_accounting SELECT 1,COALESCE((SELECT SUM(logical_bytes) FROM requests),0)+COALESCE((SELECT SUM(logical_bytes) FROM events),0),(SELECT COUNT(*) FROM requests),(SELECT COUNT(*) FROM events),(SELECT COUNT(*) FROM ingest),NULL")
         for table, counter in (("requests", "request_count"), ("events", "event_count")):
             self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_insert AFTER INSERT ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes+NEW.logical_bytes,{counter}={counter}+1 WHERE id=1; END")
-            cascade = "DELETE FROM attempts WHERE request_id=OLD.id;" if table == "requests" else ""
-            self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_delete AFTER DELETE ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes-OLD.logical_bytes,{counter}={counter}-1 WHERE id=1; {cascade} END")
+            self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_delete AFTER DELETE ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes-OLD.logical_bytes,{counter}={counter}-1 WHERE id=1; END")
             self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_{table}_update AFTER UPDATE OF logical_bytes ON {table} BEGIN UPDATE detail_accounting SET logical_bytes=logical_bytes+NEW.logical_bytes-OLD.logical_bytes WHERE id=1; END")
         for operation, delta in (("INSERT", "+1"), ("DELETE", "-1")):
             self._db.execute(f"CREATE TRIGGER IF NOT EXISTS audit_ingest_{operation.lower()} AFTER {operation} ON ingest BEGIN UPDATE detail_accounting SET ingest_count=ingest_count{delta} WHERE id=1; END")
@@ -196,16 +299,22 @@ class AuditStore:
             raise ValueError("invalid max_bytes")
         if isinstance(retention_days, bool) or not isinstance(retention_days, int) or not 1 <= retention_days <= 36500:
             raise ValueError("invalid retention_days")
-        if isinstance(preview_limit, bool) or not isinstance(preview_limit, int) or not 0 <= preview_limit <= 65536:
+        if isinstance(preview_limit, bool) or not isinstance(preview_limit, int) or not 0 <= preview_limit <= 4 * 1024 * 1024:
             raise ValueError("invalid preview_limit")
 
     def _fault(self, exc, dropped=False):
+        # Lock contention is expected under load and never latches the degraded
+        # banner; only real storage errors do. Lifetime counters stay honest.
         with self._health_lock:
             self.failure_count += 1
             self.dropped_records += int(dropped)
-            self.failure_events.append(time.monotonic())
             self.last_failure_at = time.time()
+            if isinstance(exc, TimeoutError):
+                self.transient_count += 1
+                self.transient_events.append(time.monotonic())
+                return
             # Exception messages may include SQL or user data; retain only type.
+            self.failure_events.append(time.monotonic())
             self.last_error = type(exc).__name__
 
     def _recent_failures(self):
@@ -215,6 +324,14 @@ class AuditStore:
             while self.failure_events and self.failure_events[0] <= deadline:
                 self.failure_events.pop(0)
             return len(self.failure_events)
+
+    def _recent_transients(self):
+        # Contention is reported for a shorter window; it is visibility, not alarm.
+        with self._health_lock:
+            deadline = time.monotonic() - self.TRANSIENT_WINDOW_SECONDS
+            while self.transient_events and self.transient_events[0] <= deadline:
+                self.transient_events.pop(0)
+            return len(self.transient_events)
 
     def note_failure(self, code="ObservationError"):
         self._fault(RuntimeError(), dropped=True)
@@ -231,7 +348,7 @@ class AuditStore:
             self._db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
             if write:
                 self._db.execute("BEGIN IMMEDIATE")
-            result = callback()
+            result = callback(self._db)
             if write:
                 self._db.execute("COMMIT")
             if on_commit is not None:
@@ -252,16 +369,37 @@ class AuditStore:
                 self._db.set_progress_handler(None, 0)
             self._lock.release()
 
+    def _read_run(self, callback, fallback=None):
+        """Each read takes a fresh read-only WAL snapshot: dashboards and log
+        listings never queue behind write transactions or each other."""
+        conn = self._open_read()
+        if conn is None:
+            return self._run(callback, fallback)
+        try:
+            if self._closed:
+                raise RuntimeError("closed")
+            deadline = time.monotonic() + 5
+            conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+            return callback(conn)
+        except Exception as exc:
+            self._fault(exc)
+            return fallback
+        finally:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
     @property
     def epoch(self):
         return self.ticket()["epoch"]
 
     def ticket(self):
-        def fetch():
-            row = self._db.execute("SELECT epoch,detail_generation FROM state").fetchone()
+        def fetch(db):
+            row = db.execute("SELECT epoch,detail_generation FROM state").fetchone()
             self._epoch = row["epoch"]
             return dict(row)
-        return self._run(fetch, {"epoch": self._epoch, "detail_generation": -1})
+        return self._read_run(fetch, {"epoch": self._epoch, "detail_generation": -1})
 
     @staticmethod
     def _empty_stats():
@@ -278,7 +416,7 @@ class AuditStore:
                 target[key] = (target.get(key) or 0) + value
         return target
 
-    def _aggregate(self, record):
+    def _aggregate(self, db, record):
         increment = self._empty_stats()
         increment["requests"] = 1
         increment[record["outcome"]] = 1
@@ -292,19 +430,23 @@ class AuditStore:
         # Unknown model/profile/credential values get no bucket of their own: the global
         # row still counts the request, and an empty key would rank as "未识别模型".
         dimensions += [(key, value)
-                       for key in ("model", "profile", "credential")
+                       for key in ("model", "profile", "credential", "api_key")
                        if (value := record.get("public_model" if key == "model" else key))]
         for table, seconds in (("stats_hourly", 3600), ("stats_daily", 86400), ("stats_totals", 0)):
             bucket = int(record["started_at"] // seconds) * seconds if seconds else 0
             for dimension, key in dimensions:
-                old = self._db.execute(f"SELECT payload FROM {table} WHERE bucket=? AND dimension=? AND dimension_key=?", (bucket, dimension, key)).fetchone()
+                old = db.execute(f"SELECT payload FROM {table} WHERE bucket=? AND dimension=? AND dimension_key=?", (bucket, dimension, key)).fetchone()
                 stats = self._merge(json.loads(old[0]) if old else self._empty_stats(), increment)
-                self._db.execute(f"INSERT OR REPLACE INTO {table} VALUES(?,?,?,?)", (bucket, dimension, key, json.dumps(stats)))
+                db.execute(f"INSERT OR REPLACE INTO {table} VALUES(?,?,?,?)", (bucket, dimension, key, json.dumps(stats)))
 
     def _sanitize_record(self, source):
         result = {key: safe_label(source.get(key)) for key in
                   ("upstream_model", "profile", "credential", "protocol", "error_code", "usage_source")}
         result["client_ip"] = safe_label(source.get("client_ip"))
+        api_key = source.get("api_key")
+        result["api_key"] = api_key if isinstance(api_key, str) and (
+            re.fullmatch(r"k_[A-Za-z0-9_-]{12}", api_key)
+            or api_key in ("admin-external", "anonymous")) else None
         result["user_agent"] = safe_agent(source.get("user_agent"))
         result["stream_mode"] = (source.get("stream_mode")
                                  if source.get("stream_mode") in ("compatible", "realtime") else None)
@@ -346,29 +488,26 @@ class AuditStore:
         return result
 
     def record_request(self, record):
-        def commit():
+        def commit(db):
             data = self._sanitize_record(record)
-            state = self._db.execute("SELECT * FROM state").fetchone()
+            state = db.execute("SELECT * FROM state").fetchone()
             if data["epoch"] != state["epoch"]:
                 return {"ok": True, "recorded": False, "reason": "stale_epoch"}
-            if not self._db.execute("INSERT OR IGNORE INTO ingest VALUES(?, 'request', ?)", (data["id"], data["started_at"])).rowcount:
+            if not db.execute("INSERT OR IGNORE INTO ingest VALUES(?, 'request', ?)", (data["id"], data["started_at"])).rowcount:
                 return {"ok": True, "recorded": False, "reason": "duplicate"}
-            self._aggregate(data)
+            self._aggregate(db, data)
             generation = record.get("detail_generation")
             keep = (data["started_at"] > state["cleared_at"] and
                     (generation is None or generation == state["detail_generation"]))
             if keep:
                 payload = json.dumps(data, separators=(",", ":"))
-                self._db.execute(
-                    "INSERT INTO requests(id,started_at,model,profile,credential,outcome,status_code,payload,logical_bytes,client_ip) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                db.execute(
+                    "INSERT INTO requests(id,started_at,model,profile,credential,outcome,status_code,payload,logical_bytes,client_ip,duration_ms,api_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (data["id"], data["started_at"], data["model"], data["profile"], data["credential"],
                      data["outcome"], data["status_code"], payload,
-                     len(payload.encode()) + sum(len(json.dumps(a).encode()) + 32 for a in data["attempts"]) + 256,
-                     data["client_ip"]))
-                for i, attempt in enumerate(data["attempts"]):
-                    self._db.execute("INSERT INTO attempts VALUES(?,?,?)", (data["id"], i, json.dumps(attempt)))
+                     len(payload.encode()) + 256, data["client_ip"], data["duration_ms"], data["api_key"]))
             self._prune()
-            return {"ok": True, "recorded": True, "details": bool(keep and self._db.execute("SELECT 1 FROM requests WHERE id=?", (data["id"],)).fetchone())}
+            return {"ok": True, "recorded": True, "details": bool(keep and db.execute("SELECT 1 FROM requests WHERE id=?", (data["id"],)).fetchone())}
         return self._run(commit, {"ok": False, "recorded": False, "reason": "storage_failure"}, write=True, dropped=True)
 
     def _oldest(self, cutoff=None):
@@ -400,14 +539,15 @@ class AuditStore:
                 break
             self._db.execute("DELETE FROM ingest WHERE id=?", (row[0],))
 
-    def _cleanup_pending(self, budget=None, retention_days=None):
+    def _cleanup_pending(self, budget=None, retention_days=None, db=None):
         budget = self.max_bytes if budget is None else budget
         cutoff = time.time() - (self.retention_days if retention_days is None else retention_days) * 86400
-        accounting = self._db.execute("SELECT logical_bytes,cleanup_target FROM detail_accounting WHERE id=1").fetchone()
-        ingest_expired = self._db.execute(
+        db = self._db if db is None else db
+        accounting = db.execute("SELECT logical_bytes,cleanup_target FROM detail_accounting WHERE id=1").fetchone()
+        ingest_expired = db.execute(
             "SELECT 1 FROM ingest WHERE created_at<? LIMIT 1", (cutoff,)).fetchone()
         return (accounting[0] > budget or accounting[1] is not None or ingest_expired or any(
-            self._db.execute(f"SELECT 1 FROM {table} WHERE started_at<? LIMIT 1", (cutoff,)).fetchone()
+            db.execute(f"SELECT 1 FROM {table} WHERE started_at<? LIMIT 1", (cutoff,)).fetchone()
             for table in ("requests", "events")))
 
     def _prune(self, max_bytes=None, retention_days=None):
@@ -436,30 +576,31 @@ class AuditStore:
         self._db.execute("UPDATE detail_accounting SET cleanup_target=? WHERE id=1", (target,))
 
     def event(self, kind, action, details=None):
-        if kind not in ("runtime", "admin"):
+        if kind not in ("runtime", "admin", "credit"):
             raise ValueError("invalid event kind")
         started_at = time.time()
-        def commit():
+        def commit(db):
             source = details if isinstance(details, dict) else {}
-            state = self._db.execute("SELECT * FROM state").fetchone()
+            state = db.execute("SELECT * FROM state").fetchone()
             if source.get("epoch", state["epoch"]) != state["epoch"]:
                 return {"ok": True, "recorded": False, "reason": "stale_epoch"}
             event_id = safe_label(source.get("event_id", source.get("id"))) or uuid.uuid4().hex
-            if not self._db.execute("INSERT OR IGNORE INTO ingest VALUES(?,?,?)", (event_id, kind, started_at)).rowcount:
+            if not db.execute("INSERT OR IGNORE INTO ingest VALUES(?,?,?)", (event_id, kind, started_at)).rowcount:
                 return {"ok": True, "recorded": False, "reason": "duplicate"}
             if (started_at <= state["cleared_at"] or
                     source.get("detail_generation", state["detail_generation"]) != state["detail_generation"]):
                 return {"ok": True, "recorded": False, "reason": "details_cleared"}
             data = {"id": event_id, "kind": kind, "action": safe_label(action),
-                    "started_at": started_at, "details": safe_attempt(source)}
+                    "started_at": started_at,
+                    "details": safe_credit_change(source) if kind == "credit" else safe_attempt(source)}
             payload = json.dumps(data)
-            self._db.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (event_id, data["started_at"], kind, data["action"], payload, len(payload.encode()) + 128))
+            db.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (event_id, data["started_at"], kind, data["action"], payload, len(payload.encode()) + 128))
             self._prune()
             return {"ok": True, "recorded": True, "id": event_id}
         return self._run(commit, {"ok": False, "recorded": False}, write=True, dropped=True)
 
     def list_records(self, kind="request", limit=50, cursor=None, **filters):
-        if kind not in ("request", "runtime", "admin"):
+        if kind not in ("request", "runtime", "admin", "credit"):
             raise ValueError("invalid record kind")
         limit = max(1, min(int(limit), 200))
         # Expiry cleanup is incremental, but expired details are never visible.
@@ -478,7 +619,7 @@ class AuditStore:
             clauses.append("(started_at<? OR (started_at=? AND id<?))")
             params.extend((stamp, stamp, record_id))
         if kind == "request":
-            for key in ("model", "profile", "credential", "outcome", "status_code", "client_ip"):
+            for key in ("model", "profile", "credential", "outcome", "status_code", "client_ip", "api_key"):
                 value = filters.get(key)
                 if value is not None and value != "":
                     clauses.append(f"{key}=?")
@@ -488,6 +629,16 @@ class AuditStore:
                 column = "outcome" if status in ("success", "error", "cancelled") else "status_code"
                 clauses.append(f"{column}=?")
                 params.append(status)
+        if kind == "credit":
+            if filters.get("credential"):
+                clauses.append("json_extract(payload,'$.details.credential')=?")
+                params.append(filters["credential"])
+            change = filters.get("type")
+            if change:
+                if change not in CREDIT_CHANGES:
+                    raise ValueError("invalid credit change type")
+                clauses.append("action=?")
+                params.append("credit." + change)
         for key, op in (("since", ">="), ("until", "<=")):
             if filters.get(key) is not None:
                 clauses.append(f"started_at{op}?")
@@ -499,23 +650,21 @@ class AuditStore:
             clauses.append("(" + " OR ".join(f"{col} LIKE ? ESCAPE '\\'" for col in columns) + ")")
             params.extend(["%" + term + "%"] * len(columns))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        def fetch():
-            self._prune()
+        def fetch(db):
             params[0] = time.time() - self.retention_days * 86400
-            rows = self._db.execute(f"SELECT payload,started_at,id FROM {table}{where} ORDER BY started_at DESC,id DESC LIMIT ?", (*params, limit + 1)).fetchall()
+            rows = db.execute(f"SELECT payload,started_at,id FROM {table}{where} ORDER BY started_at DESC,id DESC LIMIT ?", (*params, limit + 1)).fetchall()
             more = len(rows) > limit
             rows = rows[:limit]
             return {"items": [json.loads(row["payload"]) for row in rows],
                     "next_cursor": json.dumps([rows[-1]["started_at"], rows[-1]["id"]]) if more else None,
                     "has_more": more}
-        return self._run(fetch, {"items": [], "next_cursor": None, "has_more": False, "degraded": True}, write=True)
+        return self._read_run(fetch, {"items": [], "next_cursor": None, "has_more": False, "degraded": True})
 
     def get_request(self, id):
-        def fetch():
-            self._prune()
-            row = self._db.execute("SELECT payload FROM requests WHERE id=? AND started_at>=?", (id, time.time() - self.retention_days * 86400)).fetchone()
+        def fetch(db):
+            row = db.execute("SELECT payload FROM requests WHERE id=? AND started_at>=?", (id, time.time() - self.retention_days * 86400)).fetchone()
             return json.loads(row[0]) if row else None
-        return self._run(fetch, write=True)
+        return self._read_run(fetch)
 
     def dashboard(self, days=30, granularity="auto"):
         days = int(days)
@@ -527,10 +676,10 @@ class AuditStore:
         now = time.time()
         start = int(now // 86400) * 86400 - (days - 1) * 86400
         period = {"days": days, "start": start, "end": now, "timezone": "UTC", "granularity": grain}
-        def fetch():
+        def fetch(db):
             summary = self._empty_stats()
             series, models, profiles = [], {}, {}
-            rows = self._db.execute("SELECT * FROM stats_daily WHERE bucket>=? AND bucket<=? ORDER BY bucket", (start, now)).fetchall()
+            rows = db.execute("SELECT * FROM stats_daily WHERE bucket>=? AND bucket<=? ORDER BY bucket", (start, now)).fetchall()
             for row in rows:
                 stats = json.loads(row["payload"])
                 if row["dimension"] == "global":
@@ -545,7 +694,7 @@ class AuditStore:
                     target = models if row["dimension"] == "model" else profiles
                     self._merge(target.setdefault(row["dimension_key"], self._empty_stats()), stats)
             if grain == "hour":
-                rows = self._db.execute("SELECT bucket,payload FROM stats_hourly WHERE dimension='global' AND bucket>=? AND bucket<=? ORDER BY bucket", (start, now)).fetchall()
+                rows = db.execute("SELECT bucket,payload FROM stats_hourly WHERE dimension='global' AND bucket>=? AND bucket<=? ORDER BY bucket", (start, now)).fetchall()
                 series = [{"bucket": row["bucket"], **json.loads(row["payload"])} for row in rows]
             partial = grain == "hour" and sum(row["requests"] for row in series) != summary["requests"]
             step = 3600 if grain == "hour" else 86400
@@ -557,32 +706,35 @@ class AuditStore:
                 row["date"] = time.strftime("%Y-%m-%d %H:00" if grain == "hour" else "%Y-%m-%d", time.gmtime(row["bucket"]))
             summary["success_rate"] = summary["success"] / summary["requests"] if summary["requests"] else None
             previous = self._empty_stats()
-            for row in self._db.execute(
+            for row in db.execute(
                     "SELECT payload FROM stats_daily WHERE dimension='global' AND bucket>=? AND bucket<?",
                     (start - days * 86400, start)).fetchall():
                 self._merge(previous, json.loads(row["payload"]))
             previous["success_rate"] = previous["success"] / previous["requests"] if previous["requests"] else None
-            durations = sorted(r[0] for r in self._db.execute(
-                "SELECT json_extract(payload,'$.duration_ms') FROM requests WHERE started_at>=? AND started_at<=?",
-                (start, now)).fetchall() if r[0] is not None)
+            known = db.execute(
+                "SELECT COUNT(*) FROM requests WHERE started_at>=? AND started_at<=? AND duration_ms IS NOT NULL",
+                (start, now)).fetchone()[0]
             # Detail rows can be pruned, archived, or cleared independently of daily
             # aggregates; only report P95 when the detail sample covers the period.
             summary["p95_duration_ms"] = (
-                durations[max(0, math.ceil(len(durations) * 0.95) - 1)]
-                if durations and len(durations) >= summary["duration_ms_known"]
+                db.execute(
+                    "SELECT duration_ms FROM requests WHERE started_at>=? AND started_at<=? AND duration_ms IS NOT NULL"
+                    " ORDER BY duration_ms LIMIT 1 OFFSET ?",
+                    (start, now, max(0, math.ceil(known * 0.95) - 1))).fetchone()[0]
+                if known and known >= summary["duration_ms_known"]
                 else None)
             return {"summary": summary, "previous": previous, "series": series,
                     "models": [{"model": key, **value} for key, value in models.items()],
                     "profiles": [{"profile": key, **value} for key, value in profiles.items()],
                     "generated_at": now, "range": {**period, "partial": partial}}
-        return self._run(fetch, {"summary": {**self._empty_stats(), "p95_duration_ms": None},
+        return self._read_run(fetch, {"summary": {**self._empty_stats(), "p95_duration_ms": None},
                                  "previous": None, "series": [], "models": [], "profiles": [],
                                  "generated_at": now, "range": period, "degraded": True})
 
     def credential_stats(self):
-        def fetch():
+        def fetch(db):
             out = {}
-            for row in self._db.execute(
+            for row in db.execute(
                     "SELECT dimension_key,payload FROM stats_totals WHERE dimension='credential' AND dimension_key!=''").fetchall():
                 stats = json.loads(row["payload"])
                 reqs = stats.get("requests") or 0
@@ -599,7 +751,7 @@ class AuditStore:
                     "credit": stats.get("credit"),
                     "avg_duration_ms": round((stats.get("duration_ms_sum") or 0) / dur_known, 1) if dur_known else None,
                 }
-            for row in self._db.execute(
+            for row in db.execute(
                     "SELECT credential,MAX(started_at) AS last_at,model,outcome,status_code "
                     "FROM requests WHERE credential IS NOT NULL AND credential!='' GROUP BY credential").fetchall():
                 entry = out.setdefault(row["credential"], {
@@ -612,19 +764,68 @@ class AuditStore:
                 entry["last_outcome"] = row["outcome"]
                 entry["last_status_code"] = row["status_code"]
             return out
-        return self._run(fetch, {})
+        return self._read_run(fetch, {})
+
+    def api_key_stats(self, now=None):
+        """Return approximate rolling-24-hour aggregates keyed by API key id."""
+        now = time.time() if now is None else float(now)
+        start = int(now // 3600) * 3600 - 23 * 3600
+
+        def fetch(db):
+            result = {}
+            rows = db.execute(
+                "SELECT dimension_key,payload FROM stats_hourly "
+                "WHERE dimension='api_key' AND bucket>=?", (start,)).fetchall()
+            for row in rows:
+                target = result.setdefault(row[0], {"requests": 0, "success": 0, "error": 0,
+                                                     "total_tokens": None, "credit": None})
+                stats = json.loads(row[1])
+                for key in ("requests", "success", "error"):
+                    target[key] += stats.get(key) or 0
+                for key in ("total_tokens", "credit"):
+                    value = stats.get(key)
+                    if isinstance(value, (int, float)):
+                        target[key] = (target[key] or 0) + value
+            return {"degraded": False, "items": result}
+
+        return self._read_run(fetch, {"degraded": True, "items": {}})
+
+    def credit_samples(self, since):
+        """Per-request upstream charges with their token counts, oldest first.
+
+        Only requests whose upstream usage reported a credit figure are returned; the
+        model is the upstream one, since billing follows what was actually sent.
+        """
+        def fetch(db):
+            rows = db.execute(
+                "SELECT started_at, profile, COALESCE(json_extract(payload,'$.upstream_model'), model) AS model, "
+                "json_extract(payload,'$.credit') AS credit, "
+                "COALESCE(json_extract(payload,'$.input_tokens'),0) AS input_tokens, "
+                "COALESCE(json_extract(payload,'$.cache_read_tokens'),0) AS cache_read_tokens, "
+                "COALESCE(json_extract(payload,'$.output_tokens'),0) AS output_tokens "
+                "FROM requests WHERE started_at>=? AND json_extract(payload,'$.credit') IS NOT NULL "
+                "AND profile IS NOT NULL "
+                # Probes are logged too, but their calibrated samples come from the probe table.
+                "AND COALESCE(json_extract(payload,'$.protocol'),'')!='rate_probe' "
+                "ORDER BY started_at", (since,)).fetchall()
+            return [dict(row) for row in rows if row["model"]]
+        return self._read_run(fetch, [])
+
     def storage(self):
-        def fetch():
-            self._prune()
-            self._epoch = self._db.execute("SELECT epoch FROM state").fetchone()[0]
-            page_size = self._db.execute("PRAGMA page_size").fetchone()[0]
-            freelist = self._db.execute("PRAGMA freelist_count").fetchone()[0]
-            return {**dict(self._db.execute("SELECT logical_bytes,request_count,event_count,ingest_count FROM detail_accounting WHERE id=1").fetchone()),
-                    "pending_cleanup": self._cleanup_pending(),
-                    "page_count": self._db.execute("PRAGMA page_count").fetchone()[0],
+        # Opening the storage/dashboard page keeps incremental cleanup moving
+        # with the same bounded write slice; heavy scans stay read-only.
+        self._run(lambda db: self._prune(), write=True)
+
+        def fetch(db):
+            self._epoch = db.execute("SELECT epoch FROM state").fetchone()[0]
+            page_size = db.execute("PRAGMA page_size").fetchone()[0]
+            freelist = db.execute("PRAGMA freelist_count").fetchone()[0]
+            return {**dict(db.execute("SELECT logical_bytes,request_count,event_count,ingest_count FROM detail_accounting WHERE id=1").fetchone()),
+                    "pending_cleanup": self._cleanup_pending(db=db),
+                    "page_count": db.execute("PRAGMA page_count").fetchone()[0],
                     "freelist_pages": freelist, "reclaimable_bytes": freelist * page_size}
-        result = self._run(fetch, {"logical_bytes": None, "pending_cleanup": None,
-                                   "reclaimable_bytes": None}, write=True)
+        result = self._read_run(fetch, {"logical_bytes": None, "pending_cleanup": None,
+                                        "reclaimable_bytes": None})
         sizes = {}
         for key, suffix in (("db_bytes", ""), ("wal_bytes", "-wal"), ("shm_bytes", "-shm")):
             try:
@@ -638,6 +839,7 @@ class AuditStore:
         return {**result, **sizes, "max_bytes": self.max_bytes, "retention_days": self.retention_days,
                 "preview_limit": self.preview_limit, "schema_version": SCHEMA_VERSION, "epoch": self._epoch,
                 "degraded": bool(recent), "recent_failures": recent, "failure_count": self.failure_count,
+                "transient_contention": self._recent_transients(), "transient_count": self.transient_count,
                 "dropped_records": self.dropped_records, "last_error": self.last_error,
                 "last_failure_at": self.last_failure_at,
                 "closed": self._closed, "budget_scope": "details_logical_bytes",
@@ -647,16 +849,16 @@ class AuditStore:
     def clear(self, scope="details"):
         if scope not in ("details", "all"):
             raise ValueError("invalid clear scope")
-        def commit():
-            for table in ("requests", "attempts", "events"):
-                self._db.execute(f"DELETE FROM {table}")
-            self._db.execute("UPDATE detail_accounting SET cleanup_target=NULL WHERE id=1")
-            self._db.execute("UPDATE state SET detail_generation=detail_generation+1,cleared_at=? WHERE id=1", (time.time(),))
+        def commit(db):
+            for table in ("requests", "events"):
+                db.execute(f"DELETE FROM {table}")
+            db.execute("UPDATE detail_accounting SET cleanup_target=NULL WHERE id=1")
+            db.execute("UPDATE state SET detail_generation=detail_generation+1,cleared_at=? WHERE id=1", (time.time(),))
             if scope == "all":
                 for table in ("stats_hourly", "stats_daily", "stats_totals", "ingest"):
-                    self._db.execute(f"DELETE FROM {table}")
-                self._db.execute("UPDATE state SET epoch=epoch+1 WHERE id=1")
-            epoch = self._db.execute("SELECT epoch FROM state").fetchone()[0]
+                    db.execute(f"DELETE FROM {table}")
+                db.execute("UPDATE state SET epoch=epoch+1 WHERE id=1")
+            epoch = db.execute("SELECT epoch FROM state").fetchone()[0]
             return {"ok": True, "scope": scope, "epoch": epoch, "aggregates_preserved": scope == "details"}
         return self._run(commit, {"ok": False, "scope": scope}, write=True,
                          on_commit=lambda result: setattr(self, "_epoch", result["epoch"]))
@@ -716,7 +918,7 @@ class AuditStore:
                     last = (0.0, "")
                     while True:
                         rows = step(lambda last=last: self._db.execute(
-                            "SELECT id,started_at,model,profile,credential,outcome,status_code,payload,client_ip "
+                            "SELECT id,started_at,model,profile,credential,outcome,status_code,payload,client_ip,api_key "
                             "FROM requests WHERE started_at<? AND (started_at,id)>(?,?) "
                             "ORDER BY started_at,id LIMIT 2000",
                             (cutoff, *last)).fetchall())
@@ -726,7 +928,8 @@ class AuditStore:
                             handle.write(json.dumps(
                                 {"kind": "request", "id": row[0], "started_at": row[1], "model": row[2],
                                  "profile": row[3], "credential": row[4], "outcome": row[5],
-                                 "status_code": row[6], "payload": json.loads(row[7]), "client_ip": row[8]},
+                                 "status_code": row[6], "payload": json.loads(row[7]), "client_ip": row[8],
+                                 "api_key": row[9]},
                                 ensure_ascii=False) + "\n")
                             request_ids.append(row[0])
                         last = (rows[-1][1], rows[-1][0])
@@ -749,11 +952,12 @@ class AuditStore:
                     os.fsync(handle.fileno())
                 os.chmod(tmp, 0o600)
                 os.replace(tmp, target)
-                dir_fd = os.open(directory, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
+                if os.name != "nt":
+                    dir_fd = os.open(directory, os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
             except Exception:
                 try:
                     tmp.unlink()
@@ -785,7 +989,7 @@ class AuditStore:
                   self.retention_days if retention_days is None else retention_days,
                   self.preview_limit if preview_limit is None else preview_limit)
         self._validate(*values)
-        def commit():
+        def commit(db):
             # Resolve unspecified settings under the lock, not from a stale
             # snapshot taken before another configure() completed.
             current = (self.max_bytes if max_bytes is None else max_bytes,
@@ -793,7 +997,7 @@ class AuditStore:
                        self.preview_limit if preview_limit is None else preview_limit)
             self._prune(max_bytes=current[0], retention_days=current[1])
             return {"ok": True, "max_bytes": current[0], "retention_days": current[1], "preview_limit": current[2],
-                    "pending_cleanup": self._cleanup_pending(current[0], current[1])}
+                    "pending_cleanup": self._cleanup_pending(current[0], current[1], db=db)}
         def publish(result):
             self.max_bytes, self.retention_days, self.preview_limit = (
                 result["max_bytes"], result["retention_days"], result["preview_limit"])
@@ -802,8 +1006,8 @@ class AuditStore:
     def close(self):
         if self._closed:
             return
-        def finish():
-            self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            self._db.close()
+        def finish(db):
+            db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            db.close()
             self._closed = True
         self._run(finish)

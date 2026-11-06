@@ -218,8 +218,13 @@ class CatalogSelectionTests(unittest.TestCase):
                     client.get.assert_called_once()
                     args, kwargs = client.get.call_args
                     self.assertEqual(args, (host + "/v3/config",))
-                    self.assertEqual(kwargs["headers"], catalog_headers(
-                        {"accessToken": token, "domain": hint}, {"uid": "user", "enterpriseId": "enterprise"}))
+                    expected_headers = catalog_headers(
+                        {"accessToken": token, "domain": hint}, {"uid": "user", "enterpriseId": "enterprise"})
+                    actual_headers = kwargs["headers"]
+                    if profile == "cn-work":
+                        self.assertRegex(actual_headers["X-Request-ID"], r"^[0-9a-f]{32}$")
+                        actual_headers = {**actual_headers, "X-Request-ID": expected_headers["X-Request-ID"]}
+                    self.assertEqual(actual_headers, expected_headers)
                     headers = httpx.Headers(kwargs["headers"])
                     self.assertEqual(headers["authorization"], f"Bearer {token}")
                     self.assertEqual(headers["x-domain"], domain)
@@ -352,6 +357,29 @@ class CatalogCacheTests(unittest.TestCase):
         with patch("app.credits.time.time", return_value=60):
             self.assertFalse(cache.fresh("international"))
             self.assertEqual(cache.age("international"), 60)
+
+    def test_partial_catalog_never_replaces_a_complete_one(self):
+        with patch("app.credits.time.time", return_value=1000):
+            cache = ModelCatalogCache(self.path, ttl=60)
+            cache.put("international", [{"id": "merged"}], serves=[{"id": "merged"}], complete=True)
+            self.assertTrue(cache.fresh("international"))
+            self.assertFalse(cache.put("international", [{"id": "personal-only"}],
+                                       serves=[{"id": "personal-only"}], complete=False))
+            self.assertEqual([m["id"] for m in cache.models("international")], ["merged"])
+            self.assertTrue(cache.fresh("international"))
+            # A first fetch without any prior catalog may still cache the personal-only result.
+            self.assertTrue(cache.put("domestic", [{"id": "personal-only"}], complete=False))
+            self.assertFalse(cache.fresh("domestic"))
+            self.assertEqual([m["id"] for m in cache.models("domestic")], ["personal-only"])
+
+    def test_stale_catalog_sequence_is_ignored(self):
+        with patch("app.credits.time.time", return_value=1000):
+            cache = ModelCatalogCache(self.path, ttl=60)
+            self.assertTrue(cache.put("international", [{"id": "newer"}], sequence=2))
+            self.assertFalse(cache.put("international", [{"id": "older"}], sequence=1))
+            self.assertEqual([m["id"] for m in cache.models("international")], ["newer"])
+            self.assertTrue(cache.put("international", [{"id": "newest"}], sequence=3))
+            self.assertEqual([m["id"] for m in cache.models("international")], ["newest"])
 
     def test_deep_copy_on_put_and_get(self):
         cache = ModelCatalogCache(self.path)

@@ -114,9 +114,8 @@ class GitHubPipelineTests(unittest.TestCase):
         for required in ("test", "package", "image"):
             with self.subTest(required=required):
                 self.assertIn(required, release["needs"])
-        # `image` must stay unskippable: a skip propagates through `needs` and
-        # would silently skip the release for tags too.
-        self.assertNotIn("if", data["jobs"]["image"])
+        # PRs skip image publication; the guard must still allow pushed tags.
+        self.assertEqual(data["jobs"]["image"]["if"], "github.event_name != 'pull_request'")
         build = find_step(data["jobs"]["image"], uses_prefix="docker/build-push-action")
         self.assertIn("refs/tags/v", build["with"]["push"])
 
@@ -156,6 +155,27 @@ class GitHubPipelineTests(unittest.TestCase):
     def test_package_runs_after_validation(self):
         data, _ = github()
         self.assertEqual(sorted(data["jobs"]["package"]["needs"]), ["test", "web"])
+
+    def test_packaging_and_image_reuse_the_tested_console(self):
+        data, _ = github()
+        jobs = data["jobs"]
+        upload = find_step(jobs["web"], uses_prefix="actions/upload-artifact")
+        self.assertEqual(upload["with"]["name"], "web-dist")
+        for job in ("package", "image"):
+            download = find_step(jobs[job], uses_prefix="actions/download-artifact")
+            self.assertEqual(download["with"], {"name": "web-dist", "path": "web/dist"})
+        build = find_step(jobs["image"], uses_prefix="docker/build-push-action")
+        self.assertEqual(build["with"]["build-contexts"], "webui=web/dist")
+        self.assertIn("BUILD_COMMIT=${{ github.sha }}", build["with"]["build-args"])
+
+    def test_update_checksum_index_is_published_with_the_archive(self):
+        data, _ = github()
+        upload = find_step(data["jobs"]["package"], uses_prefix="actions/upload-artifact")
+        self.assertIn("dist/SHA256SUMS", upload["with"]["path"])
+        publish = find_step(data["jobs"]["release"], run_contains="gh release")
+        for command in (line for line in publish["run"].splitlines()
+                        if "gh release upload" in line or "gh release create" in line):
+            self.assertIn("SHA256SUMS", command)
 
     def test_github_main_push_can_publish_edge(self):
         # The resolver emits `edge` for `refs/heads/main`; GitHub publishes it on
@@ -223,6 +243,7 @@ class CnbPipelineTests(unittest.TestCase):
         attachments = " ".join(upload["settings"]["attachments"])
         self.assertIn("dist/$RELEASE_ARCHIVE", attachments)
         self.assertIn(".sha256", attachments)
+        self.assertIn("dist/SHA256SUMS", attachments)
 
     def test_manifest_is_exported_for_release_and_upload(self):
         data = cnb()

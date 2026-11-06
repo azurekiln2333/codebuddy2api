@@ -1,5 +1,7 @@
 # Unified application development
 
+[Home](../README.md) · [简体中文](development.zh-CN.md)
+
 This repository contains the complete fork. `converter.py` and `app/` provide
 the inference gateway, native OIDC console login and management API. `web/`
 contains the replacement React console. The Dockerfile builds the console and
@@ -32,8 +34,8 @@ lost on restart. Credentials, settings and audit data persist in the full
 
 ## Local checks
 
-Install Python dependencies from the hashed `requirements.txt` in an isolated
-environment, and install the locked web dependencies:
+Install Python dependencies with `uv sync --locked` or from the hashed
+`requirements.txt` in an isolated environment, and install the locked web dependencies:
 
 ```bash
 python -m pip install --require-hashes --only-binary=:all: -r requirements.txt
@@ -72,7 +74,7 @@ python scripts/package.py
 python scripts/package.py --verify dist/<archive>.tar.gz
 ```
 
-The archive has a SHA-256 sidecar and excludes local credentials, env files,
+The archive has a SHA-256 sidecar and an updater-compatible `SHA256SUMS` asset and excludes local credentials, env files,
 databases and agent state. The same Dockerfile builds a checkout or extracted
 release. Stable release images update `latest`; prereleases leave stable
 aliases unchanged. Publication paths derive from the fork's repository context.
@@ -83,3 +85,62 @@ Server deployment uses `docker compose pull` followed by
 deployment's enabled application container. The separate local build override
 opts out of image updates. See [deployment](deployment.md) for private registry
 credentials, update intervals, backups and version rollback.
+
+## Simulated upstream preview
+
+```bash
+uv run --locked --no-build python -B -m preview                   # http://127.0.0.1:8790, key: preview
+uv run --locked --no-build python -B -m preview --port 8790 --data-dir /tmp/cb-preview
+```
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `--host` / `--port` | `127.0.0.1` / `8790` | Listener |
+| `--api-key` | `preview` | External admin inference key; also the compatibility-mode admin password |
+| `--data-dir` | new temporary directory | Keep the preview data across restarts; the directory must be empty or created by the preview |
+| `--public` | off | Refuse actions unsafe on a shared demo; see [Shared API demos](#shared-api-demos-and-isolation) |
+| `--reset-hours` | `0` (never) | Exit after this many hours so a supervisor restarts with fresh data |
+| other options | — | Passed to the gateway unchanged, such as `--admin-allowed-origins` |
+
+Use the API at `http://127.0.0.1:8790/v1` with the inference key `preview` (or the `--api-key` value). The preview also seeds standard keys demonstrating expiry, IP and model restrictions.
+
+The preview's sandbox disables external network access and starts the backend in SSO-disabled compatibility mode. It therefore does not provide an OIDC sign-in for this fork's console. Do not use its local `admin` / `preview` password on the replacement UI. Use the native SSO integration fixture described above to exercise the console, or point `AZUREKILN_GATEWAY_URL` at an SSO-configured local gateway when running `pnpm --dir web dev`.
+
+### What is simulated
+
+Everything below the gateway is simulated; everything in it is the real code. Requests, failover, cooldowns, billing, audit records and background automation run as they do in production.
+
+| Area | Behaviour |
+|------|-----------|
+| Accounts | Eight synthetic accounts: domestic and international, CodeBuddy and WorkBuddy, an unlimited and a metered enterprise tenant, and one signed-out account whose refresh token was revoked |
+| History | A month of request records, so the overview, logs and statistics open populated |
+| Balances | Credit packages with different expiries; requests consume them, check-ins, trips, tasks and trial credits add to them |
+| Models | Per-region catalogs with rates, capabilities and limits |
+| Inference | Chat Completions, Responses and Anthropic Messages stream a simulated reply that quotes your message, with reasoning where the model supports it |
+| Media | Seeded images and videos plus simulated generation; public-mode media and model writes are restricted by the preview guard |
+| Automation | Check-in, Buddy travel (a trip takes three minutes), growth tasks, trial credits and the international active check-in |
+| Sign-in | Adding an account signs in a new synthetic account by itself after four seconds; the official login link it shows never needs to be opened |
+| Search, fetch and MCP | `/v1/search`, `/v1/fetch` and the MCP `web_search` / `web_fetch` tools return simulated results on `example.com` |
+| Updates | The release list holds only the current version, the mirror speed test downloads a simulated archive, and installing is disabled |
+
+Upstream state lives in memory and starts over on every launch, while the gateway's own data stays in the data directory.
+
+### Message directives
+
+Put a directive anywhere in the last user message to steer the simulated model:
+
+| Directive | Effect |
+|-----------|--------|
+| `[preview:tool]` / `[preview:tool=Name]` | Call the first or the named tool with placeholder arguments. Tools are never called without it, because a client may run whatever it is told to |
+| `[preview:429]` | Answer 429 with a quota reset time, triggering cooldown and failover |
+| `[preview:500]` | Answer an upstream server error |
+| `[preview:slow]` | Stream slowly, to watch realtime streaming |
+| `[preview:long]` | Append a long numbered list |
+
+### Shared API demos and isolation
+
+`--public` restricts management writes, credential transfers, log clearing, archiving and updates. `--reset-hours` exits so a supervisor can restart with fresh data. These options apply to the simulated API service; they do not add an SSO login or a public browser demo. Keep its known `preview` key separate from real deployments.
+
+- The preview never reads the repository's `.env` or `auth/`: it removes every `CODEBUDDY*` variable from its environment, works from its own data directory and refuses to use `auth/`.
+- Every httpx request is answered by the simulation. Other outbound sockets and DNS lookups are refused, and the active check-in channel, which bypasses httpx, is replaced. Endpoints that are not simulated answer 501 and are logged once as `[preview] 未模拟的上游接口`.
+- One-click updates are disabled, so the working tree is never replaced.

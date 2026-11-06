@@ -7,7 +7,8 @@ export default defineConfig({
   // `e2e/serve.mjs` is the dev server, not a spec.
   testIgnore: ["**/*.integration.ts", "serve.mjs"],
   timeout: 30000,
-  globalTimeout: 90000,
+  // One worker runs every spec in turn; leave headroom as the suite grows.
+  globalTimeout: 180000,
   workers: 1,
   fullyParallel: false,
   use: {

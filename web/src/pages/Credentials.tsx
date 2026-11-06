@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { OAuth } from "../OAuth";
 import { Trial } from "../Trial";
 import { TravelSummary } from "../Travel";
 import { Buddy, buddyConfirmation } from "../Buddy";
+import { GrowthTasks, describeGrowth, useGrowthJobs } from "../GrowthTasks";
+import { JobBanner, ProgressBanner } from "../jobs";
+import { BalanceExpiry, CreditsPanel } from "../CreditsPanel";
+import { dateLabel, tokenExpiry } from "../credits";
 import {
   api,
   compact,
@@ -25,32 +30,146 @@ import {
   ErrorNotice,
   Fields,
   Icon,
+  RefreshIcon,
+  SegmentThumb,
   PageTitle,
   Panel,
   ResourceState,
   profileLabel,
 } from "../components";
-import { prepareImports, type ImportResult } from "../imports";
+import {
+  MAX_REFRESH_TOKENS,
+  REFRESH_PROFILES,
+  parseRefreshTokens,
+  prepareImports,
+  type ImportResult,
+  type RefreshProfile,
+} from "../imports";
 import { downloadFilename } from "../downloads";
 import s from "../ui.module.scss";
 import m from "../management.module.scss";
 import { useT } from "../i18n";
+import { Select } from "../fields";
+import { popoverHost, usePopover } from "../popover";
+import { clearToasts, notify } from "../toast";
 
-function expiry(value: unknown, milliseconds = false) {
-  return typeof value === "number"
-    ? new Date(milliseconds ? value : value * 1000).toLocaleString("zh-CN")
-    : text(value);
+function expiry(value: unknown) {
+  return typeof value === "number" ? new Date(value * 1000).toLocaleString("zh-CN") : text(value);
 }
 
 const lastErrorLabels: Record<string, string> = {
   http_401: "上游 401（登录态被拒）",
   http_403: "上游 403（无权限）",
+  restricted: "官方限制（11140）",
   credential_error: "凭证同步失败（详见操作结果）",
+};
+
+const healthLabels: Record<string, string> = {
+  ready: "就绪",
+  disabled: "人工停用",
+  auto_disabled: "自动禁用",
+  restricted: "被官方限制",
+  circuit_open: "认证熔断",
+  expired: "已过期",
+  error: "错误",
 };
 
 function lastErrorLabel(value: unknown) {
   const key = text(value);
   return lastErrorLabels[key] ?? key;
+}
+
+function prettyErrorJson(value: unknown) {
+  const raw = text(value);
+  if (raw === "") return "";
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+/** Last upstream error; hover (desktop) or tap (mobile) opens the recorded JSON. Click pins it open. */
+function LastErrorJson({ code, at, body }: { code: unknown; at: unknown; body: unknown }) {
+  const json = prettyErrorJson(body);
+  const [pinned, setPinned] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const leaveTimer = useRef<number | null>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const tip = useRef<HTMLDivElement | null>(null);
+  const open = pinned || hovered;
+  const close = useCallback(() => {
+    setPinned(false);
+    setHovered(false);
+  }, []);
+  const placement = usePopover(open, close, trigger, tip, "start");
+  useEffect(
+    () => () => {
+      if (leaveTimer.current !== null) window.clearTimeout(leaveTimer.current);
+    },
+    [],
+  );
+  // A short grace period bridges the gap between the trigger and the portaled tip.
+  const scheduleClose = () => {
+    if (leaveTimer.current !== null) window.clearTimeout(leaveTimer.current);
+    leaveTimer.current = window.setTimeout(() => setHovered(false), 160);
+  };
+  const holdOpen = () => {
+    if (leaveTimer.current !== null) {
+      window.clearTimeout(leaveTimer.current);
+      leaveTimer.current = null;
+    }
+    setHovered(true);
+  };
+  const hoverProps = {
+    onPointerEnter: (event: { pointerType: string }) => {
+      if (event.pointerType === "mouse") holdOpen();
+    },
+    onPointerLeave: (event: { pointerType: string }) => {
+      if (event.pointerType === "mouse") scheduleClose();
+    },
+  };
+  const label = (
+    <>
+      最近错误：{text(lastErrorLabel(code))}
+      {number(at) !== null ? ` · ${expiry(at)}` : ""}
+    </>
+  );
+  if (json === "") return <small>{label}</small>;
+  return (
+    <>
+      <small>
+        <button
+          ref={trigger}
+          type="button"
+          className={s.errorJsonTrigger}
+          aria-expanded={open}
+          /* Touch toggles purely via the pin: hover only tracks mouse pointers,
+             so a tap never strands `hovered` open. */
+          onClick={() => {
+            setPinned((value) => !value);
+          }}
+          {...hoverProps}
+        >
+          {label}
+        </button>
+      </small>
+      {open &&
+        createPortal(
+          <div
+            ref={tip}
+            className={s.errorJsonTip}
+            style={
+              placement ? { top: placement.top, left: placement.left } : { visibility: "hidden" }
+            }
+            {...hoverProps}
+          >
+            {json}
+          </div>,
+          popoverHost(trigger.current),
+        )}
+    </>
+  );
 }
 
 export { safeOAuthUrl } from "../OAuth";
@@ -62,55 +181,161 @@ function boundModels(credential: Credential): string[] {
 }
 
 function ImportDrawer({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [tab, setTab] = useState<"file" | "token">("file");
   const [results, setResults] = useState<ImportResult[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [profile, setProfile] = useState<RefreshProfile>("cn-work");
+  const [input, setInput] = useState("");
+  const parsed = parseRefreshTokens(input);
+  const tooMany = parsed.tokens.length > MAX_REFRESH_TOKENS;
+  const switchTab = (next: "file" | "token") => {
+    if (busy) return;
+    setTab(next);
+    setResults([]);
+    setError(null);
+  };
+  const importFiles = (files: File[]) => {
+    setBusy(true);
+    setError(null);
+    setResults([]);
+    void prepareImports(files)
+      .then(async (batch) => {
+        setResults(batch.results);
+        if (!batch.files.length) return;
+        const response = await api.post<unknown>("/credentials/upload", {
+          files: batch.files,
+          replace: false,
+        });
+        const server = list(object(response.data).results).map((item) => {
+          if (typeof item.name !== "string" || typeof item.ok !== "boolean")
+            throw new Error("导入结果缺少 name / ok");
+          return {
+            name: item.name,
+            ok: item.ok,
+            ...(item.error ? { error: text(item.error) } : {}),
+          };
+        });
+        setResults([...batch.results, ...server]);
+        if (server.some((item) => item.ok)) onDone();
+      })
+      .catch((err: unknown) => setError(errorMessage(err)))
+      .finally(() => setBusy(false));
+  };
+  const importTokens = () => {
+    if (busy || !parsed.tokens.length || tooMany) return;
+    setBusy(true);
+    setError(null);
+    setResults([]);
+    void api
+      .post<unknown>("/credentials/refresh-import", {
+        profile,
+        refresh_tokens: parsed.tokens,
+      })
+      .then((response) => {
+        const server = list(object(response.data).results).map((item) => {
+          if (typeof item.name !== "string" || typeof item.ok !== "boolean")
+            throw new Error("导入结果缺少 name / ok");
+          return {
+            name: item.name,
+            ok: item.ok,
+            ...(item.error ? { error: text(item.error) } : {}),
+          };
+        });
+        setResults(server);
+        if (server.some((item) => item.ok)) onDone();
+      })
+      .catch((err: unknown) => setError(errorMessage(err)))
+      .finally(() => setBusy(false));
+  };
   return (
     <Drawer title="导入凭证" onClose={onClose} dismissDisabled={busy}>
-      <p className={s.note}>
-        支持 UTF-8 .info 或 ZIP，ZIP 仅接受根目录 .info。单项 ≤ 1 MiB，每批 ≤ 100 项 / 32
-        MiB，不覆盖现有文件。
-      </p>
-      <label className={s.upload}>
-        选择 .info 或 ZIP
-        <input
-          type="file"
-          accept=".info,.zip"
-          multiple
-          disabled={busy}
-          onChange={(e) => {
-            const files = Array.from(e.target.files ?? []);
-            e.target.value = "";
-            if (!files.length) return;
-            setBusy(true);
-            setError(null);
-            setResults([]);
-            void prepareImports(files)
-              .then(async (batch) => {
-                setResults(batch.results);
-                if (!batch.files.length) return;
-                const response = await api.post<unknown>("/credentials/upload", {
-                  files: batch.files,
-                  replace: false,
-                });
-                const server = list(object(response.data).results).map((item) => {
-                  if (typeof item.name !== "string" || typeof item.ok !== "boolean")
-                    throw new Error("导入结果缺少 name / ok");
-                  return {
-                    name: item.name,
-                    ok: item.ok,
-                    ...(item.error ? { error: text(item.error) } : {}),
-                  };
-                });
-                setResults([...batch.results, ...server]);
-                if (server.some((item) => item.ok)) onDone();
-              })
-              .catch((err: unknown) => setError(errorMessage(err)))
-              .finally(() => setBusy(false));
-          }}
-        />
-      </label>
-      {busy && <p role="status">正在检查并上传，请勿关闭…</p>}
+      <div className={s.tabs} role="tablist" aria-label="导入方式">
+        <SegmentThumb />
+        {(
+          [
+            ["file", "文件导入"],
+            ["token", "仅刷新令牌"],
+          ] as ["file" | "token", string][]
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            className={tab === key ? s.selectedTab : ""}
+            onClick={() => switchTab(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "file" ? (
+        <>
+          <p className={s.note}>
+            支持 UTF-8 .info 或 ZIP，ZIP 仅接受根目录 .info。单项 ≤ 1 MiB，每批 ≤ 100 项 / 32
+            MiB，不覆盖现有文件。
+          </p>
+          <label className={s.upload}>
+            选择 .info 或 ZIP
+            <input
+              type="file"
+              accept=".info,.zip"
+              multiple
+              disabled={busy}
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                e.target.value = "";
+                if (files.length) importFiles(files);
+              }}
+            />
+          </label>
+          {busy && <p role="status">正在检查并上传，请勿关闭…</p>}
+        </>
+      ) : (
+        <>
+          <p className={s.note}>
+            每行一个刷新令牌，逐条换取访问令牌后写入新凭证。端点决定产品与地区：国内刷新令牌分不出
+            CLI 与 WorkBuddy，跨区令牌会被上游直接拒绝。
+          </p>
+          <label className={s.field}>
+            端点
+            <Select
+              value={profile}
+              disabled={busy}
+              onChange={(value) => setProfile(value as RefreshProfile)}
+            >
+              {REFRESH_PROFILES.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}（{item.value}）
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className={s.field}>
+            刷新令牌
+            <textarea
+              value={input}
+              rows={8}
+              spellCheck={false}
+              disabled={busy}
+              placeholder={"每行一个刷新令牌，# 开头的行会被忽略"}
+              onChange={(e) => setInput(e.target.value)}
+            />
+          </label>
+          <p className={s.note}>
+            已识别 {parsed.tokens.length} / {MAX_REFRESH_TOKENS} 条
+            {parsed.rejected ? `，${parsed.rejected} 行超过 8192 字符已忽略` : ""}。
+          </p>
+          <button
+            type="button"
+            disabled={busy || !parsed.tokens.length || tooMany}
+            onClick={importTokens}
+          >
+            {busy ? "正在逐条刷新并写入，请勿关闭…" : `刷新并导入 ${parsed.tokens.length} 条`}
+          </button>
+        </>
+      )}
       <ErrorNotice message={error} />
       {results.map((r, i) => (
         <div className={s.importResult} key={i}>
@@ -123,10 +348,95 @@ function ImportDrawer({ onClose, onDone }: { onClose: () => void; onDone: () => 
   );
 }
 
+type MaintenanceAction =
+  | "refresh"
+  | "checkin"
+  | "sync"
+  | "travel"
+  | "travel-status"
+  | "daily-chat"
+  | "reset-cooldown";
+const MAINTENANCE_LABELS: Record<MaintenanceAction, string> = {
+  refresh: "刷新 Token",
+  checkin: "签到",
+  sync: "同步余额",
+  travel: "旅行领派",
+  "travel-status": "旅行状态",
+  "daily-chat": "活跃打卡",
+  "reset-cooldown": "清除冷却",
+};
+// Batch runs over every account keep the names of their toolbar buttons.
+const BATCH_LABELS: Partial<Record<MaintenanceAction, string>> = {
+  sync: "同步全部余额",
+  checkin: "批量签到",
+};
+const SHOWN_RESULTS = 5;
+
+function outcomeOf(r: Record<string, unknown>): { label: string; complete: boolean } {
+  const travel = r.travel && typeof r.travel === "object" ? object(r.travel) : null;
+  if (r.ok === true && travel?.ok !== false) return { label: "已完成", complete: true };
+  const partial =
+    r.checkin_ok === true ||
+    r.claimed === true ||
+    r.departed === true ||
+    r.buddy_claimed === true ||
+    r.agreement_accepted === true ||
+    travel?.claimed === true ||
+    travel?.departed === true;
+  return { label: partial ? "部分完成" : r.skipped ? "已跳过" : "未完成", complete: false };
+}
+
+/**
+ * Report a maintenance run as a toast: a batch lists only the accounts that did not finish,
+ * a single account always shows its own result.
+ */
+function notifyMaintenance(title: string, results: Record<string, unknown>[]) {
+  const rows = results.map((r) => ({ r, ...outcomeOf(r) }));
+  const shown = results.length === 1 ? rows : rows.filter((row) => !row.complete);
+  const counts = ["已完成", "部分完成", "已跳过", "未完成"]
+    .map((label) => [label, rows.filter((row) => row.label === label).length] as const)
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${label} ${count}`)
+    .join(" · ");
+  notify({
+    key: "maintenance",
+    tone: shown.every((row) => row.complete) ? "good" : "warn",
+    title,
+    body: (
+      <>
+        {results.length > 1 && <span>{counts}</span>}
+        {shown.length > 0 && (
+          <ul className={s.toastRows}>
+            {shown.slice(0, SHOWN_RESULTS).map(({ r, label, complete }, i) => (
+              <li key={i}>
+                <strong>{text(r.name)}</strong>
+                <Badge tone={complete ? "good" : "warn"}>{label}</Badge>
+                <span>{text(r.message)}</span>
+                <TravelSummary
+                  trip={
+                    r.travel && typeof r.travel === "object"
+                      ? object(r.travel)
+                      : r.action === "travel" || r.action === "travel-status"
+                        ? r
+                        : null
+                  }
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+        {shown.length > SHOWN_RESULTS && (
+          <span>另有 {shown.length - SHOWN_RESULTS} 个账号未完成，请在对应卡片核验。</span>
+        )}
+      </>
+    ),
+  });
+}
+
 type ChannelKey = "all" | "cn" | "intl" | "enterprise";
 type ViewMode = "cards" | "list";
 type StatusFilter = "all" | "ready" | "issue" | "disabled";
-type DetailTab = "overview" | "tasks" | "cooldowns" | "raw";
+type DetailTab = "overview" | "credits" | "tasks" | "cooldowns" | "raw";
 
 const PAGE_SIZES = [10, 20, 50, 100, 500, 1000, 2000] as const;
 const PAGE_SIZE_KEY = "codebuddy2api.credPageSize";
@@ -172,25 +482,14 @@ function MoreMenu({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const menu = useRef<HTMLDivElement | null>(null);
+  const close = useCallback(() => setOpen(false), []);
+  const placement = usePopover(open, close, trigger, menu, "end");
   return (
-    <div className={s.moreMenu} ref={ref}>
+    <div className={s.moreMenu}>
       <button
+        ref={trigger}
         aria-label={label}
         aria-expanded={open}
         aria-haspopup="menu"
@@ -198,11 +497,21 @@ function MoreMenu({
       >
         {title}
       </button>
-      {open && (
-        <div className={s.moreMenuList} role="menu" onClick={() => setOpen(false)}>
-          {children}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menu}
+            className={s.moreMenuList}
+            role="menu"
+            style={
+              placement ? { top: placement.top, left: placement.left } : { visibility: "hidden" }
+            }
+            onClick={close}
+          >
+            {children}
+          </div>,
+          popoverHost(trigger.current),
+        )}
     </div>
   );
 }
@@ -223,8 +532,6 @@ export function Credentials() {
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [maintenance, setMaintenance] = useState<Record<string, unknown>[]>([]);
   const openDetail = (credential: Credential, tab: DetailTab = "overview") => {
     setDetail({ credential, tab });
   };
@@ -249,21 +556,16 @@ export function Credentials() {
       cancelled = true;
     };
   }, [liveDetail, detail?.tab]);
-  const maintain = (
-    action:
-      | "refresh"
-      | "checkin"
-      | "sync"
-      | "travel"
-      | "travel-status"
-      | "daily-chat"
-      | "reset-cooldown",
-    credential?: Credential,
-  ) => {
+  // The maintenance action in flight: `action:account`, or `action:*` for every account.
+  const [running, setRunning] = useState<{ key: string; title: string } | null>(null);
+  const maintain = (action: MaintenanceAction, credential?: Credential) => {
     if (busy) return;
+    const title = credential
+      ? `${MAINTENANCE_LABELS[action]} · ${credential.name ?? credential.id}`
+      : (BATCH_LABELS[action] ?? MAINTENANCE_LABELS[action]);
     setBusy(true);
+    setRunning({ key: `${action}:${credential?.id ?? "*"}`, title });
     setError(null);
-    setMaintenance([]);
     const path = credential
       ? `/credentials/${encodeURIComponent(credential.id)}/${action}`
       : `/${action}`;
@@ -277,7 +579,7 @@ export function Credentials() {
         )
           throw new Error("未收到完整操作结果，请刷新列表核验，勿直接重复执行");
         for (const r of results) if (r.travel !== undefined) object(r.travel, "旅行操作结果");
-        setMaintenance(results);
+        notifyMaintenance(title, results);
         if (action === "travel" && credential) {
           if (results.length !== 1 || results[0].id !== credential.id)
             throw new Error("旅行账号或结果未确认，请刷新列表核验");
@@ -294,12 +596,13 @@ export function Credentials() {
       )
       .finally(() => {
         setBusy(false);
+        setRunning(null);
         resource.reload();
       });
   };
   const oauthDone = useCallback(() => {
     setDrawer(null);
-    setNotice("授权完成，凭证已添加。");
+    notify({ tone: "good", title: "授权完成，凭证已添加。" });
     resource.reload();
   }, [resource.reload]);
   const [now, setNow] = useState(Date.now());
@@ -318,9 +621,25 @@ export function Credentials() {
       .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => setBusy(false));
   };
+  const releaseRestriction = (credential: Credential) => {
+    run(async () => {
+      const response = await api.patch(`/credentials/${encodeURIComponent(credential.id)}`, {
+        enabled: true,
+      });
+      const saved = object(response.data);
+      if (saved.id !== credential.id || saved.enabled !== true || !Number.isInteger(saved.revision))
+        throw new Error("限制解除结果未确认，请刷新列表核验");
+      notify({
+        key: "restriction",
+        tone: "good",
+        title: "官方限制已解除",
+        body: <span>账号已重新加入选路。</span>,
+      });
+    });
+  };
   const preference = (
     credential: Credential,
-    field: "auto_checkin" | "auto_travel" | "auto_daily_chat",
+    field: "auto_checkin" | "auto_travel" | "auto_daily_chat" | "auto_growth",
     enabled: boolean,
   ) => {
     run(async () => {
@@ -339,8 +658,15 @@ export function Credentials() {
           ? "自动签到"
           : field === "auto_travel"
             ? "自动旅行"
-            : "自动活跃打卡";
-      setNotice(`${label}已${enabled ? "开启" : "关闭"}；保存不会立即执行，后续维护按新设置执行。`);
+            : field === "auto_growth"
+              ? "自动成长补领"
+              : "自动活跃打卡";
+      notify({
+        key: "preference",
+        tone: "good",
+        title: `${label}已${enabled ? "开启" : "关闭"}`,
+        body: <span>保存不会立即执行，后续维护按新设置执行。</span>,
+      });
     });
   };
   const [channel, setChannel] = useState<ChannelKey>("all");
@@ -387,6 +713,20 @@ export function Credentials() {
   const safePage = Math.min(page, totalPages);
   const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
   const liveSelected = selected.filter((id) => allItems.some((c) => c.id === id));
+  const growthJobs = useGrowthJobs();
+  const accountName = (identity: string) => {
+    const credential = allItems.find((c) => c.id === identity);
+    return credential?.name ?? credential?.nickname ?? identity.slice(0, 8);
+  };
+  const growthBanner = (job: ReturnType<typeof growthJobs.byAccount>) =>
+    job?.status === "running" ? (
+      <JobBanner
+        key={job.key}
+        title={`成长计划 · ${text(accountName(text(job.meta.account)))}`}
+        job={job}
+        describe={describeGrowth}
+      />
+    ) : null;
   const channelDefs: [ChannelKey, string, string][] = [
     ["all", "全部账号", "个人区域与企业账号汇总"],
     ["cn", "国内区域", "国内 CodeBuddy · WorkBuddy"],
@@ -402,7 +742,7 @@ export function Credentials() {
       title="同步余额"
       onClick={() => maintain("sync", c)}
     >
-      <Icon name="refresh" />
+      <RefreshIcon spinning={running?.key === `sync:${c.id}` || running?.key === "sync:*"} />
     </button>
   );
   const renderActions = (c: Credential) => {
@@ -442,6 +782,15 @@ export function Credentials() {
           >
             清除冷却
           </button>
+          {c.restricted === true && (
+            <button
+              disabled={busy}
+              aria-label={`解除官方限制 ${c.name ?? c.id}`}
+              onClick={() => releaseRestriction(c)}
+            >
+              申诉通过，重新使用
+            </button>
+          )}
           {c.trial_supported === true && (
             <button
               disabled={busy || c.enabled !== true}
@@ -501,38 +850,72 @@ export function Credentials() {
           )
         }
       />
-      <span>{c.enabled === true ? "已启用" : c.enabled === false ? "人工停用" : "未知"}</span>
+      <span>{c.enabled === true ? "已启用" : c.enabled === false ? "停用" : "未知"}</span>
     </label>
   );
   const renderHealthBadge = (c: Credential) => {
+    const disabled = c.enabled === false;
     const until = number(c.fail_until);
-    const remaining = until === null ? null : Math.max(0, Math.ceil(until - now / 1000));
+    const restrictedUntil = number(c.restricted_until);
+    const restrictedRemaining =
+      restrictedUntil === null ? null : Math.max(0, Math.ceil(restrictedUntil - now / 1000));
+    const remaining = disabled
+      ? null
+      : until === null
+        ? null
+        : Math.max(0, Math.ceil(until - now / 1000));
+    const label =
+      c.restricted === true
+        ? restrictedRemaining !== null && restrictedRemaining > 0
+          ? `${healthLabels.restricted} ${restrictedRemaining}s`
+          : healthLabels.restricted
+        : disabled
+          ? c.auto_disabled
+            ? healthLabels.auto_disabled
+            : healthLabels.disabled
+          : remaining !== null && remaining > 0
+            ? `认证熔断 ${remaining}s`
+            : c.health === "ready"
+              ? "认证正常"
+              : (healthLabels[typeof c.health === "string" ? c.health : ""] ?? text(c.health));
     return (
       <Badge
-        tone={remaining !== null && remaining > 0 ? "bad" : c.health === "ready" ? "good" : "warn"}
+        tone={
+          c.restricted === true || (remaining !== null && remaining > 0)
+            ? "bad"
+            : c.health === "ready"
+              ? "good"
+              : "warn"
+        }
       >
-        {remaining !== null && remaining > 0
-          ? `认证熔断 ${remaining}s`
-          : c.health === "ready"
-            ? "认证正常"
-            : text(c.health)}
+        {label}
       </Badge>
     );
   };
   const renderSyncAndCatalog = (c: Credential) => {
     const cooldowns = Array.isArray(c.cooldowns) ? list(c.cooldowns) : null;
     const trip = c.travel && typeof c.travel === "object" ? object(c.travel) : null;
+    const tokenAt = tokenExpiry(c);
     return (
       <>
         <strong>
-          {c.sync_pending === true
-            ? "目录同步中"
-            : c.catalog_ready === true
-              ? "目录已就绪"
+          {c.catalog_ready === true
+            ? "目录已就绪"
+            : c.sync_pending === true
+              ? "目录同步中"
               : "目录状态待确认"}
         </strong>
         <div className={s.credSyncTags}>
-          <small>{c.token_expired === true ? "Token 已过期" : "同步正常"}</small>
+          <small>
+            {c.token_expired === true
+              ? "Token 已过期"
+              : typeof c.sync_error === "string" && c.sync_error !== ""
+                ? "同步异常"
+                : "同步正常"}
+          </small>
+          {c.token_expired !== true && tokenAt !== null && (
+            <small>Token 至 {dateLabel(tokenAt, now / 1000)}</small>
+          )}
           {cooldowns ? (
             cooldowns.length ? (
               cooldowns.map((cooldown, i) => (
@@ -551,10 +934,7 @@ export function Credentials() {
           ) : null}
         </div>
         {c.last_error_code != null && (
-          <small>
-            最近错误：{text(lastErrorLabel(c.last_error_code))}
-            {number(c.last_failure_at) !== null ? ` · ${expiry(c.last_failure_at)}` : ""}
-          </small>
+          <LastErrorJson code={c.last_error_code} at={c.last_failure_at} body={c.last_error_body} />
         )}
         {typeof c.sync_error === "string" && c.sync_error !== "" && (
           <small>失败原因：{text(c.sync_error)}</small>
@@ -659,7 +1039,9 @@ export function Credentials() {
           <small>
             {c.travel_supported === true
               ? `上次旅行：${trip ? text(trip.message) : "尚未查询"}`
-              : "旅行仅适用于国内账号"}
+              : isEnterprise(c)
+                ? "企业账号不参与成长中心，无法旅行"
+                : "旅行仅适用于国内账号"}
           </small>
         </div>
         <div className={s.credTaskRow}>
@@ -691,6 +1073,22 @@ export function Credentials() {
         {c.trial_supported === true && c.trial != null && (
           <small>体验积分：{text(object(c.trial).message)}</small>
         )}
+        {c.growth_supported === true && (
+          <>
+            <small>
+              <strong>成长计划</strong>
+              （仅国内个人账号；任务开关默认关闭，开启后自动推进）
+            </small>
+            <GrowthTasks
+              credential={c}
+              busy={busy}
+              onPreference={preference}
+              selectedIds={liveSelected}
+              job={growthJobs.byAccount(c.id)}
+              onRun={(code) => growthJobs.start(c.id, code)}
+            />
+          </>
+        )}
       </div>
     );
   };
@@ -701,8 +1099,13 @@ export function Credentials() {
         description={t("credentials.description")}
         actions={
           <>
-            <button onClick={resource.reload}>
-              <Icon name="refresh" />
+            <button
+              onClick={() => {
+                clearToasts();
+                resource.reload();
+              }}
+            >
+              <RefreshIcon spinning={resource.refreshing} />
               刷新列表
             </button>
             <button disabled={busy} onClick={() => maintain("sync")}>
@@ -724,14 +1127,14 @@ export function Credentials() {
           </>
         }
       />
-      {notice && (
-        <p className={s.successNotice} role="status">
-          {notice}
-        </p>
+      {!detail && running && (
+        <ProgressBanner title={running.title}>
+          <small>正在执行，请勿重复提交…</small>
+        </ProgressBanner>
       )}
-      {busy && <p role="status">操作执行中，请勿重复提交…</p>}
+      {growthJobs.jobs.map(growthBanner)}
       <ResourceState {...resource} />
-      <ErrorNotice message={error} />
+      {!detail && <ErrorNotice message={error} />}
       {resource.data && (
         <div
           className={`${s.channelGrid} ${m.channelSummary}`}
@@ -763,7 +1166,12 @@ export function Credentials() {
                 key={key}
                 type="button"
                 aria-pressed={active}
-                className={`${s.channelCard} ${active ? s.channelActive : ""}`}
+                className={active ? s.channelActive : ""}
+                title={
+                  hasNumeric
+                    ? `${group.length} 个账号 · 剩余额度 ${metric(totalCredits)}${unlimited ? ` (+${unlimited} 无限)` : ""}`
+                    : `${group.length} 个账号 · ${hint}`
+                }
                 onClick={() => {
                   setChannel(active && key !== "all" ? "all" : key);
                   setPage(1);
@@ -782,57 +1190,12 @@ export function Credentials() {
                   {hasNumeric ? compact(totalCredits) : unlimited > 0 ? "无限" : `${group.length}`}
                 </strong>
                 <small>
-                  {hasNumeric
-                    ? `${group.length} 个账号 · 剩余额度${unlimited ? ` (+${unlimited} 无限)` : ""}`
-                    : `${group.length} 个账号 · ${hint}`}
+                  {ready} / {group.length} 就绪
                 </small>
               </button>
             );
           })}
         </div>
-      )}
-      {maintenance.length > 0 && (
-        <Panel title="凭证操作结果">
-          <ul className={s.operationResults} aria-live="polite">
-            {maintenance.map((r, i) => {
-              const complete =
-                r.ok === true &&
-                !(r.travel && typeof r.travel === "object" && object(r.travel).ok === false);
-              return (
-                <li key={i}>
-                  <strong>{text(r.name)}</strong>
-                  <Badge tone={complete ? "good" : "warn"}>
-                    {complete
-                      ? "已完成"
-                      : r.checkin_ok === true ||
-                          r.claimed === true ||
-                          r.departed === true ||
-                          r.buddy_claimed === true ||
-                          r.agreement_accepted === true ||
-                          (r.travel &&
-                            typeof r.travel === "object" &&
-                            (object(r.travel).claimed === true ||
-                              object(r.travel).departed === true))
-                        ? "部分完成"
-                        : r.skipped
-                          ? "已跳过"
-                          : "未完成"}
-                  </Badge>
-                  <span>{text(r.message)}</span>
-                  <TravelSummary
-                    trip={
-                      r.travel && typeof r.travel === "object"
-                        ? object(r.travel)
-                        : r.action === "travel" || r.action === "travel-status"
-                          ? r
-                          : null
-                    }
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        </Panel>
       )}
       <Panel
         title="账号凭证"
@@ -869,6 +1232,7 @@ export function Credentials() {
               />
             </div>
             <div className={s.statusPills} role="group" aria-label="状态筛选">
+              <SegmentThumb />
               {(
                 [
                   ["all", "全部"],
@@ -896,6 +1260,7 @@ export function Credentials() {
             )}
           </div>
           <div className={s.viewSwitch} role="group" aria-label="视图切换">
+            <SegmentThumb />
             <button
               type="button"
               aria-pressed={view === "cards"}
@@ -966,13 +1331,7 @@ export function Credentials() {
                                   : metric(balance.credits ?? balance.remaining)
                                 : "未知"}
                             </strong>
-                            <small>
-                              {c.token_expires_at !== undefined
-                                ? expiry(c.token_expires_at, true)
-                                : c.expiresAt !== undefined
-                                  ? expiry(c.expiresAt, true)
-                                  : expiry(c.expires_at ?? balance?.soonest_expiry)}
-                            </small>
+                            <BalanceExpiry credits={balance} now={now / 1000} />
                           </div>
                           <div>
                             <span>目录与同步状态</span>
@@ -1040,13 +1399,7 @@ export function Credentials() {
                                 </strong>
                                 {renderSyncIcon(c)}
                               </div>
-                              <small>
-                                {c.token_expires_at !== undefined
-                                  ? expiry(c.token_expires_at, true)
-                                  : c.expiresAt !== undefined
-                                    ? expiry(c.expiresAt, true)
-                                    : expiry(c.expires_at ?? balance?.soonest_expiry)}
-                              </small>
+                              <BalanceExpiry credits={balance} now={now / 1000} />
                             </td>
                             <td>{renderUsageBlock(c, true)}</td>
                             <td>
@@ -1069,17 +1422,17 @@ export function Credentials() {
                   {Math.min(filtered.length, safePage * pageSize)} 条 · 共 {filtered.length} 个账号
                 </span>
                 <div className={s.credPagerRight}>
-                  <select
+                  <Select
                     aria-label="每页显示数量"
                     value={pageSize}
-                    onChange={(e) => choosePageSize(Number(e.target.value))}
+                    onChange={(value) => choosePageSize(Number(value))}
                   >
                     {PAGE_SIZES.map((n) => (
                       <option key={n} value={n}>
                         {n} / 页
                       </option>
                     ))}
-                  </select>
+                  </Select>
                   <button
                     type="button"
                     disabled={safePage <= 1}
@@ -1115,7 +1468,10 @@ export function Credentials() {
             confirmation={buddyTarget.confirmation}
             onClose={() => setBuddyTarget(null)}
             onDone={(result) => {
-              setMaintenance([result]);
+              notifyMaintenance(
+                `首次领取猫猫并派遣 · ${buddyTarget.credential.name ?? buddyTarget.credential.id}`,
+                [result],
+              );
               resource.reload();
             }}
           />
@@ -1144,6 +1500,13 @@ export function Credentials() {
             title={`凭证详情 · ${liveDetail.name ?? liveDetail.id}`}
             onClose={() => setDetail(null)}
           >
+            {running && (
+              <ProgressBanner title={running.title}>
+                <small>正在执行，请勿重复提交…</small>
+              </ProgressBanner>
+            )}
+            {growthBanner(growthJobs.byAccount(liveDetail.id))}
+            <ErrorNotice message={error} />
             <div className={s.detailBar}>
               <div className={s.credCardBadges}>
                 {renderHealthBadge(liveDetail)}
@@ -1160,9 +1523,11 @@ export function Credentials() {
               </div>
             </div>
             <div className={s.tabs} role="tablist" aria-label="凭证详情分区">
+              <SegmentThumb />
               {(
                 [
                   ["overview", "概览与请求"],
+                  ["credits", "官方额度"],
                   ["tasks", "自动化配置"],
                   ["cooldowns", "绑定与冷却"],
                   ["raw", "原始诊断"],
@@ -1228,6 +1593,7 @@ export function Credentials() {
                 </Panel>
               </>
             )}
+            {detail.tab === "credits" && <CreditsPanel credential={liveDetail} now={now / 1000} />}
             {detail.tab === "tasks" && (
               <Panel title="自动任务与日常维护">
                 <div className={s.panelBody}>

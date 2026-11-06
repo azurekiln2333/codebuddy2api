@@ -126,6 +126,8 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertEqual(digest, manifest["sha256"])
             recorded = (output / f"{manifest['archive']}.sha256").read_text().split()[0]
             self.assertEqual(recorded, digest)
+            self.assertEqual((output / "SHA256SUMS").read_text(),
+                             f"{digest}  {manifest['archive']}\n")
             self.assertTrue((output / "build-manifest.json").is_file())
             self.assertIn("codebuddy2api v1.2.3", (output / "release-notes.md").read_text())
             self.assertEqual(json.loads((output / "build-manifest.json").read_text())["sha256"], digest)
