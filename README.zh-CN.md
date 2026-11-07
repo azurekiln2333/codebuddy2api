@@ -39,7 +39,7 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-Compose 默认拉取 `latest`（`CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest`）；镜像同时发布发行版本（例如 `1.5.4`）与跟随 `main` 的 `edge`。需固定部署时改用版本标签；镜像功能以对应版本为准，不包含尚未合并的源码分支改动。
+Compose 默认拉取 `latest`（`CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest`）；镜像同时发布发行版本（例如 `1.5.5`）与跟随 `main` 的 `edge`。需固定部署时改用版本标签；镜像功能以对应版本为准，不包含尚未合并的源码分支改动。
 
 首次使用：
 
