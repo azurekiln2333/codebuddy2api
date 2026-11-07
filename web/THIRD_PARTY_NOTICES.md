@@ -45,16 +45,16 @@ this project remains MIT and does not include AGPL code.
 
 ## Runtime dependencies
 
-| Package      | Version | License | Use                                                   |
-| ------------ | ------- | ------- | ----------------------------------------------------- |
-| axios        | 1.20.0  | MIT     | HTTP client for `/sso` and `/admin`.                  |
-| fflate       | 0.8.3   | MIT     | ZIP decompression for credential import/export.       |
-| react        | 19.2.4  | MIT     | UI runtime.                                           |
-| react-dom    | 19.2.4  | MIT     | DOM renderer.                                         |
-| react-router | 7.18.2  | MIT     | Client-side routing.                                  |
-| zustand      | 5.0.15  | MIT     | Lightweight state stores (session, appearance, etc.). |
-| @fontsource-variable/dm-sans | 5.3.0 | OFL-1.1 | Locally served interface font. |
-| @fontsource-variable/jetbrains-mono | 5.3.0 | OFL-1.1 | Locally served code and identifier font. |
+| Package                             | Version | License | Use                                                   |
+| ----------------------------------- | ------- | ------- | ----------------------------------------------------- |
+| axios                               | 1.20.0  | MIT     | HTTP client for `/sso` and `/admin`.                  |
+| fflate                              | 0.8.3   | MIT     | ZIP decompression for credential import/export.       |
+| react                               | 19.2.4  | MIT     | UI runtime.                                           |
+| react-dom                           | 19.2.4  | MIT     | DOM renderer.                                         |
+| react-router                        | 7.18.2  | MIT     | Client-side routing.                                  |
+| zustand                             | 5.0.15  | MIT     | Lightweight state stores (session, appearance, etc.). |
+| @fontsource-variable/dm-sans        | 5.3.0   | OFL-1.1 | Locally served interface font.                        |
+| @fontsource-variable/jetbrains-mono | 5.3.0   | OFL-1.1 | Locally served code and identifier font.              |
 
 DM Sans and JetBrains Mono are bundled and served from the gateway, with no
 external font request. Chinese text uses the system fallback families. Their
