@@ -153,14 +153,28 @@ class NativeSsoIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get("/sso/session")).status_code, 401)
         self.assertEqual((await self.client.get("/admin/session")).status_code, 401)
 
-    async def test_static_build_documents_and_pages_are_reachable(self):
+    async def test_static_routes_match_the_web_build_state(self):
+        # The backend gate runs before the WebUI build in a clean checkout. Its
+        # real-socket contract includes the explicit unbuilt response; the native
+        # browser gate later requires the actual shell and all three documents.
+        build_root = self.fixture.backend.repo_root / "web" / "dist"
+        built = (build_root / "index.html").is_file()
         for page in ("/dashboard/", "/dashboard/storage", "/dashboard/settings"):
             with self.subTest(page=page):
-                self.assertEqual((await self.client.get(page)).status_code, 200, page)
+                response = await self.client.get(page)
+                self.assertEqual(response.status_code, 200 if built else 503, page)
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                if built:
+                    self.assertEqual(response.text, (build_root / "index.html").read_text(encoding="utf-8"))
+                else:
+                    self.assertIn("WebUI 尚未构建", response.json()["detail"])
         for name in BUILD_DOCUMENTS:
             with self.subTest(document=name):
                 response = await self.client.get(f"/dashboard/{name}")
-                self.assertEqual(response.status_code, 200, name)
+                self.assertEqual(response.status_code, 200 if built else 404, name)
+                if built:
+                    self.assertGreater(len(response.content), 0)
+                    self.assertIn("text/plain", response.headers["content-type"])
         self.assertEqual((await self.client.get("/sso/missing")).status_code, 404)
         self.assertEqual((await self.client.get("/dashboard/nope")).status_code, 302)
 

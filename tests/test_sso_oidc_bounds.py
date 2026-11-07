@@ -31,6 +31,7 @@ class RawJsonServer:
         self.max_written = 0
         self.completed = False
         self.aborted = False
+        self.disconnected = asyncio.Event()
         self._server: asyncio.AbstractServer | None = None
         self._tasks: set[asyncio.Task] = set()
         self.issuer = ""
@@ -79,7 +80,10 @@ class RawJsonServer:
         try:
             while written < self.body_size:
                 if self.stall_after is not None and written >= self.stall_after:
-                    await asyncio.sleep(30)  # never finishes the declared body
+                    # Leave the declared body incomplete until the client closes.
+                    await reader.read()
+                    self.aborted = True
+                    self.disconnected.set()
                     break
                 size = min(self.chunk, self.body_size - written)
                 writer.write(b"x" * size)
@@ -90,6 +94,7 @@ class RawJsonServer:
                 self.completed = True
         except (ConnectionResetError, BrokenPipeError, OSError):
             self.aborted = True
+            self.disconnected.set()
         finally:
             self.max_written = max(self.max_written, written)
             try:
@@ -111,15 +116,21 @@ class StreamingBoundTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_oversized_body_is_aborted_instead_of_buffered(self):
         body_size = 8 * 1024 * 1024
-        server, client = await self.boot(body_size=body_size)
+        chunk = 64 * 1024
+        server, client = await self.boot(
+            body_size=body_size, chunk=chunk, stall_after=MAX_JSON_BYTES + chunk,
+            timeout_ms="5000",
+        )
         with self.assertRaises(OidcError) as raised:
             await client.build_authorize_url(redirect_uri=REDIRECT_URI, state="s", nonce="n", verifier="v")
         self.assertEqual(raised.exception.code, "response_too_large")
-        # The cap is enforced while reading: the provider never got to deliver the
-        # whole body, which is only possible with a streamed response.
-        self.assertLess(server.max_written, body_size // 2)
+        # Send only enough to cross the cap, then require a peer disconnect.
+        # A buffered request would wait for the remaining body and time out.
+        # Bytes accepted by writer.drain() include OS socket buffers and cannot
+        # measure how much the client consumed across different platforms.
+        await asyncio.wait_for(server.disconnected.wait(), timeout=2)
+        self.assertTrue(server.aborted)
         self.assertFalse(server.completed)
-        self.assertLess(server.max_written, 2 * MAX_JSON_BYTES + 1024 * 1024)
 
     async def test_a_body_just_under_the_cap_is_still_accepted(self):
         server, client = await self.boot(body_size=1024)
