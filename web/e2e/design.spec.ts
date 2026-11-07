@@ -119,6 +119,7 @@ test("desktop login keeps the reference two-column composition with a single SSO
   await page.setViewportSize(DESKTOP);
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/dashboard/login");
+  await page.evaluate(() => document.fonts.ready);
 
   const story = page.locator("#root > div > section");
   const main = page.locator("#root > div > main");
@@ -143,6 +144,7 @@ test("desktop login keeps the reference two-column composition with a single SSO
   await expect(page.getByRole("heading", { name: "登录 CodeBuddy2Api" })).toBeVisible();
   const action = page.getByRole("link", { name: "使用统一身份登录" });
   await expect(action).toHaveAttribute("href", "/sso/login?return_to=/dashboard/");
+  await expect(action).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(page.locator("#root input, #root form")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "外观设置" })).toBeVisible();
   expect(errors).toEqual([]);
@@ -234,6 +236,7 @@ test("mobile login collapses to one column with the brand kept and no page overf
   await page.setViewportSize(MOBILE);
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/dashboard/login");
+  await page.evaluate(() => document.fonts.ready);
 
   const story = page.locator("#root > div > section");
   const main = page.locator("#root > div > main");
@@ -248,6 +251,13 @@ test("mobile login collapses to one column with the brand kept and no page overf
   await expect(page.getByRole("heading", { name: "登录 CodeBuddy2Api" })).toBeVisible();
   await expect(page.getByRole("link", { name: "使用统一身份登录" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const card = page.locator('[class*="loginCard"]').first();
+  const cardBox = (await card.boundingBox())!;
+  expect(cardBox.x).toBe(30);
+  expect(cardBox.width).toBe(315);
+  expect(cardBox.y).toBeGreaterThan(230);
+  expect(cardBox.y + cardBox.height).toBeLessThan(600);
+  await expect(story.locator('[class*="brandText"]')).toHaveCSS("font-size", "23px");
 
   // Regression: the theme control was once absolutely positioned above the
   // login column and clipped at y=0 on phones. Assert it is fully on screen
@@ -257,8 +267,7 @@ test("mobile login collapses to one column with the brand kept and no page overf
   // It belongs to the brand row band, not to the sign-in card.
   const themeBox = (await themeControl.boundingBox())!;
   expect(themeBox.y + themeBox.height).toBeLessThanOrEqual(storyBox!.height);
-  const cardBox = (await page.locator("#root > div > main").boundingBox())!;
-  expect(themeBox.y + themeBox.height).toBeLessThan(cardBox.y + cardBox.height);
+  expect(themeBox.y + themeBox.height).toBeLessThan(cardBox.y);
   await page.screenshot({
     path: "test-results/design-login-mobile-light.png",
     fullPage: true,
@@ -286,6 +295,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await page.goto("/dashboard/");
     await expect(page.getByRole("heading", { level: 1, name: "运行概览" })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
 
     const geometry = await page.evaluate(() => {
@@ -308,6 +318,13 @@ for (const theme of ["light", "dark"] as const) {
       const navStyle = getComputedStyle(navLink);
       const workspaceStyle = getComputedStyle(workspace);
       return {
+        workspace: box(workspace),
+        workspaceOverflow: workspaceStyle.overflowY,
+        font: getComputedStyle(document.body).fontFamily,
+        fontLoaded: [...document.fonts].some(
+          (face) => face.family.includes("DM Sans Variable") && face.status === "loaded",
+        ),
+        documentHeight: document.documentElement.scrollHeight,
         header: box(document.querySelector("header")!),
         sidebar: box(aside),
         main: box(document.querySelector("main")!),
@@ -353,7 +370,13 @@ for (const theme of ["light", "dark"] as const) {
     expect(geometry.sidebar.width).toBe(SIDEBAR);
     expect(geometry.sidebar.top).toBe(HEADER_HEIGHT);
     // Inset surface panel with the 16px workspace radius.
-    expect(geometry.main.x).toBeGreaterThanOrEqual(SIDEBAR + 8);
+    expect(geometry.workspace.x).toBe(SIDEBAR);
+    expect(geometry.workspace.top).toBe(HEADER_HEIGHT + 8);
+    expect(geometry.workspace.top + geometry.workspace.height).toBe(DESKTOP.height - 8);
+    expect(geometry.workspaceOverflow).toBe("auto");
+    expect(geometry.documentHeight).toBe(DESKTOP.height);
+    expect(geometry.font).toContain("DM Sans Variable");
+    expect(geometry.fontLoaded).toBe(true);
     expect(geometry.workspaceRadius).toBe("16px");
     expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewportWidth);
 
@@ -361,7 +384,7 @@ for (const theme of ["light", "dark"] as const) {
     expect(geometry.headerPadding).toBe("0px 16px");
     expect(geometry.headerBackground).toBe(geometry.sidebarBackground);
     expect(geometry.sidebarPadding).toBe("8px 12px 12px");
-    expect(geometry.workspaceMargin).toBe(`8px 8px 0px ${SIDEBAR + 8}px`);
+    expect(geometry.workspaceMargin).toBe(`8px 8px 8px ${SIDEBAR}px`);
     expect(geometry.workspaceBorder).toBe("1px");
     expect(geometry.mainPadding).toBe("20px 22px 18px");
     expect(geometry.footerFontSize).toBe("12px");
@@ -375,6 +398,10 @@ for (const theme of ["light", "dark"] as const) {
     expect(geometry.navCaption).toEqual({ fontSize: "11px", letterSpacing: "0.5px" });
     // The active entry is an inset surface, not a solid fill.
     expect(geometry.activeShadow).toContain("inset");
+    expect(geometry.activeBackground).toBe(
+      theme === "light" ? "rgb(207, 221, 242)" : "rgb(184, 204, 235)",
+    );
+    expect(geometry.activeColor).toBe("rgb(0, 0, 0)");
     // Only the sidebar entry marks the current page; the brand shortcut must not.
     expect(geometry.currentPageMarkers).toBe(1);
     expect(geometry.currentPageMarkerTag).toBe("A");

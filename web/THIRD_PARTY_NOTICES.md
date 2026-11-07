@@ -53,9 +53,12 @@ this project remains MIT and does not include AGPL code.
 | react-dom    | 19.2.4  | MIT     | DOM renderer.                                         |
 | react-router | 7.18.2  | MIT     | Client-side routing.                                  |
 | zustand      | 5.0.15  | MIT     | Lightweight state stores (session, appearance, etc.). |
+| @fontsource-variable/dm-sans | 5.3.0 | OFL-1.1 | Locally served interface font. |
+| @fontsource-variable/jetbrains-mono | 5.3.0 | OFL-1.1 | Locally served code and identifier font. |
 
-No webfont packages are bundled; the console uses a system font stack that
-includes Chinese-capable families.
+DM Sans and JetBrains Mono are bundled and served from the gateway, with no
+external font request. Chinese text uses the system fallback families. Their
+complete OFL license texts are included in `THIRD_PARTY_LICENSES.txt`.
 
 ## Development dependencies
 

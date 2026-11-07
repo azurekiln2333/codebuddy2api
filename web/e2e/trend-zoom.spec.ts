@@ -47,14 +47,18 @@ test("trend zoom swaps to hourly granularity without crashing", async ({ page })
   await page.goto("/dashboard/");
   const chart = page.getByRole("img", { name: "按日用量趋势" });
   await expect(chart).toBeVisible();
-  const box = (await chart.boundingBox())!;
+  await chart.scrollIntoViewIfNeeded();
+  let box = (await chart.boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
   for (let i = 0; i < 12; i++) {
     await page.mouse.wheel(0, -240);
     await page.waitForTimeout(80);
   }
   // hourly granularity takes over in the narrow window
-  await expect(page.getByRole("img", { name: "按小时用量趋势" })).toBeVisible();
+  const hourlyChart = page.getByRole("img", { name: "按小时用量趋势" });
+  await expect(hourlyChart).toBeVisible();
+  await hourlyChart.scrollIntoViewIfNeeded();
+  box = (await hourlyChart.boundingBox())!;
   // hover past where the daily series would have ended
   for (let f = 0.2; f <= 0.9; f += 0.1) {
     await page.mouse.move(box.x + box.width * f, box.y + box.height * 0.5);

@@ -11,7 +11,7 @@ CodeBuddy2Api 的浏览器管理控制台。它是构建到 `/dashboard/` 的静
 
 ## 功能
 
-- 概览：请求、成功率、Token 用量、凭证健康与存储状态。
+- 概览：Token/Credit 双摘要、请求与成功率、用量趋势、凭证健康及官方余额。
 - 模型路由：启停、对外/上游 ID、凭证或区域绑定、能力预检。
 - 凭证管理：导入导出、上游 OAuth 账号登记、自动任务。
 - 媒体生成：图像与视频任务、本地资源查看和管理。
@@ -21,6 +21,7 @@ CodeBuddy2Api 的浏览器管理控制台。它是构建到 `/dashboard/` 的静
 - 系统设置：可修改 / 外部锁定 / 系统只读三类来源视图。
 - 版本更新：检查本 fork 发布、校验并安装发布包，支持更新备份。
 - 明暗/跟随系统外观、中文优先的双语界面、手机自适应布局。
+- 本地打包的 DM Sans / JetBrains Mono 字体、内部滚动工作区和手机导航抽屉。
 
 ## 本地开发
 
@@ -65,7 +66,7 @@ pnpm exec playwright test   # 浏览器契约与几何回归
 src/              React/TypeScript SPA 源码
   api.ts          /sso 与 /admin 客户端、会话 store、响应校验
   App.tsx         外壳、登录、加载屏、守卫、路由
-  pages/          概览、模型路由、凭证、日志、存储、设置
+  pages/          概览、凭证、模型、媒体、密钥、日志、存储、设置、更新
   theme.scss      语义 token（颜色/圆角/尺寸）
   ui.module.scss  外壳与共享组件样式
 e2e/              Playwright 浏览器契约与几何回归
@@ -74,7 +75,7 @@ public/           构建期生成的许可证文本（不提交）
 dist/             构建产物（不提交）
 ```
 
-设计规范见仓库根 [`docs/design-system.md`](../docs/design-system.md)。
+设计规范见仓库根 [`docs/design-system.zh-CN.md`](../docs/design-system.zh-CN.md)。
 部署与集成说明见仓库根 `docs/` 下的部署文档。
 
 ## 许可与来源

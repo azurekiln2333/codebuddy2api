@@ -459,6 +459,7 @@ export function Storage() {
   return (
     <>
       <PageTitle
+        eyebrow={t("page.storageEyebrow")}
         title={t("storage.title")}
         description={t("storage.desc")}
         actions={

@@ -320,7 +320,11 @@ export function Updates() {
     );
   return (
     <>
-      <PageTitle title={t("updates.title")} description={t("updates.desc")} />
+      <PageTitle
+        eyebrow={t("page.updatesEyebrow")}
+        title={t("updates.title")}
+        description={t("updates.desc")}
+      />
       <ResourceState {...resource} />
       {buildWarning && (
         <div className={s.warning} role="status">

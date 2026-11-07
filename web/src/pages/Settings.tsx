@@ -423,6 +423,7 @@ export function Settings() {
   return (
     <>
       <PageTitle
+        eyebrow={t("page.settingsEyebrow")}
         title={t("nav.settings")}
         description={t("settings.description")}
         actions={

@@ -105,6 +105,9 @@ test("trend has hover, keyboard and touch values without mobile overflow", async
   await fixture(page);
   await page.goto("/dashboard/");
   const chart = page.getByRole("img", { name: "按小时用量趋势" });
+  // The summary cards precede the chart inside the workspace scroll container.
+  // Pointer coordinates must be sampled after the chart enters the viewport.
+  await chart.scrollIntoViewIfNeeded();
   let box = (await chart.boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.97, box.y + box.height * 0.5);
   await expect(page.getByRole("tooltip")).toContainText("03:00");

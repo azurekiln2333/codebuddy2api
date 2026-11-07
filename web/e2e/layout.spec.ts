@@ -202,7 +202,7 @@ function expectDesktop(rects: Rects, label: string, sidebarWidth = SIDEBAR) {
   expect(rects.aside.x, `${label}: sidebar starts at viewport left`).toBe(0);
   expect(rects.aside.top, `${label}: sidebar starts below global header`).toBe(HEADER_HEIGHT);
   expect(rects.main.x, `${label}: content panel clears the sidebar`).toBeGreaterThanOrEqual(
-    rects.aside.right + PANEL_INSET,
+    rects.aside.right,
   );
   expect(rects.main.right, `${label}: panel keeps its right inset`).toBeLessThanOrEqual(
     rects.header.right - PANEL_INSET,
@@ -340,12 +340,11 @@ async function expectNavigationPanel(page: Page, drawer: Locator, label: string)
   const rect = await panel.boundingBox();
   expect(rect, `${label}: navigation panel is painted`).not.toBeNull();
   if (!rect) throw new Error(`${label}: missing navigation panel`);
-  expect(rect.width, `${label}: usable drawer width`).toBeGreaterThanOrEqual(250);
-  expect(rect.width, `${label}: drawer leaves some backdrop visible`).toBeLessThanOrEqual(320);
+  expect(rect.width, `${label}: reference drawer width`).toBe(208);
   expect(rect.x, `${label}: panel is inside viewport`).toBeGreaterThanOrEqual(0);
   expect(rect.x, `${label}: panel opens from the left`).toBeLessThanOrEqual(16);
   expect(rect.y, `${label}: panel is inside viewport`).toBeGreaterThanOrEqual(0);
-  expect(rect.y, `${label}: panel starts near viewport top`).toBeLessThanOrEqual(16);
+  expect(rect.y, `${label}: panel starts below the header`).toBe(HEADER_HEIGHT);
   expect(rect.x + rect.width).toBeLessThanOrEqual(MOBILE_WIDTH);
   await expect(panel).toHaveCSS("opacity", "1");
   const backgroundAlpha = await panel.evaluate((node) => {

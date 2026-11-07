@@ -413,6 +413,7 @@ export function Media() {
   return (
     <>
       <PageTitle
+        eyebrow={t("page.mediaEyebrow")}
         title={t("media.title")}
         description={t("media.desc")}
         actions={
@@ -461,9 +462,7 @@ export function Media() {
             <strong>
               {data.usage.images.count} · {bytes(data.usage.images.bytes)}
             </strong>
-            <div>
-              <span className={s.pill}>{t("media.retention", { hours: data.ttl_hours })}</span>
-            </div>
+            <small>{t("media.retention", { hours: data.ttl_hours })}</small>
           </div>
           <div className={s.kpiCard}>
             <small>{t("media.kpi.videos")}</small>

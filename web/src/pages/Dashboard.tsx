@@ -239,6 +239,7 @@ export function Dashboard() {
   return (
     <div className={dashboard.page}>
       <PageTitle
+        eyebrow={t("page.overviewEyebrow")}
         title={t("dash.runtime")}
         description={t("dash.description")}
         actions={
@@ -295,24 +296,37 @@ export function Dashboard() {
             </div>
           )}
           <KpiCards summary={d.summary} previous={d.previous} series={d.series} />
-          <Panel
-            title={t("dash.usageTrend")}
-            hint={t("dash.usageTrendHint")}
-            className={`${s.trend} ${dashboard.trendPanel}`}
-          >
-            {period.partial === true && (
-              <p className={s.note} role="status">
-                {t("dash.storagePartial")}
-              </p>
+          <Panel title={t("dash.balanceTitle")} className={dashboard.balancePanel}>
+            <p className={s.note}>{t("dash.balanceNote")}</p>
+            {d.official_credits !== undefined ? (
+              <OfficialCredits value={d.official_credits} />
+            ) : (
+              <p className={s.muted}>{t("dash.balanceEmpty")}</p>
             )}
-            <UsageTrend
-              rows={d.series}
-              hourlyRows={hourly.data?.series}
-              hourlyPartial={hourly.data?.range?.partial === true}
-              granularity={actualGrain}
-              partial={period.partial === true}
-            />
           </Panel>
+          <div className={dashboard.trendGrid}>
+            <Panel
+              title={t("dash.usageTrend")}
+              hint={t("dash.usageTrendHint")}
+              className={dashboard.trendPanel}
+            >
+              {period.partial === true && (
+                <p className={s.note} role="status">
+                  {t("dash.storagePartial")}
+                </p>
+              )}
+              <UsageTrend
+                rows={d.series}
+                hourlyRows={hourly.data?.series}
+                hourlyPartial={hourly.data?.range?.partial === true}
+                granularity={actualGrain}
+                partial={period.partial === true}
+              />
+            </Panel>
+            <Panel title={t("dash.credentialHealth")} className={dashboard.healthPanel}>
+              <Health data={d.health} />
+            </Panel>
+          </div>
           <div className={dashboard.detailsGrid}>
             <Panel
               title={t("dash.modelRank")}
@@ -381,17 +395,6 @@ export function Dashboard() {
                 </div>
               ) : (
                 <Empty title={t("dash.profileUsageEmpty")} />
-              )}
-            </Panel>
-            <Panel title={t("dash.credentialHealth")} className={dashboard.healthPanel}>
-              <Health data={d.health} />
-            </Panel>
-            <Panel title={t("dash.balanceTitle")} className={dashboard.balancePanel}>
-              <p className={s.note}>{t("dash.balanceNote")}</p>
-              {d.official_credits !== undefined ? (
-                <OfficialCredits value={d.official_credits} />
-              ) : (
-                <p className={s.muted}>{t("dash.balanceEmpty")}</p>
               )}
             </Panel>
           </div>

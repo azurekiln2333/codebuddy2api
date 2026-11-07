@@ -178,6 +178,7 @@ export function Logs() {
   return (
     <>
       <PageTitle
+        eyebrow={t("page.logsEyebrow")}
         title={t("logs.title")}
         description={t("logs.description")}
         actions={

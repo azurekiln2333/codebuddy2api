@@ -161,13 +161,15 @@ export function KpiCards({
       "var(--error)",
     ],
     [
-      t("dash.kpi.credit"),
-      "leaf",
-      compact(summary.credit),
-      metric(number(summary.credit)),
-      t("dash.vsPrevious", { pct: delta(number(summary.credit), number(previous?.credit)) ?? "—" }),
-      sparkOf("credit"),
-      "var(--series-credit)",
+      t("dash.kpi.successfulRequests"),
+      "shield",
+      compact(summary.success),
+      metric(number(summary.success)),
+      t("dash.vsPrevious", {
+        pct: delta(number(summary.success), number(previous?.success)) ?? "—",
+      }),
+      sparkOf("success"),
+      "var(--series-tokens)",
     ],
     [
       t("dash.kpi.totalTokens"),
@@ -226,15 +228,58 @@ export function KpiCards({
     </section>
   );
   return (
-    <section className={dashboard.overview} aria-labelledby="usage-overview-title">
-      <div className={dashboard.overviewHeading}>
-        <span className={dashboard.sectionIcon}>
-          <Icon name="grid" />
-        </span>
-        <div>
-          <h2 id="usage-overview-title">{t("dash.usageOverview")}</h2>
+    <section className={dashboard.overview} aria-label={t("dash.usageOverview")}>
+      <div className={dashboard.summaryGrid}>
+        <section className={dashboard.summaryCard}>
+          <div className={dashboard.summaryHeading}>
+            <h2>{t("dash.kpi.totalTokens")}</h2>
+            <span className={dashboard.metricIcon}>
+              <Icon name="model" />
+            </span>
+          </div>
+          <div className={dashboard.summaryValue}>
+            <KpiValue label={t("dash.kpi.totalTokens")} display={metric(total)} exact={null} />
+            <span>Tokens</span>
+          </div>
+          <dl className={dashboard.summaryDetails}>
+            <div>
+              <dt>{t("dash.kpi.inputTokens")}</dt>
+              <dd>{metric(input)}</dd>
+            </div>
+            <div>
+              <dt>{t("dash.kpi.outputTokens")}</dt>
+              <dd>{metric(summary.output_tokens)}</dd>
+            </div>
+            <div>
+              <dt>{t("dash.kpi.cacheReadTokens")}</dt>
+              <dd>{metric(cacheRead)}</dd>
+            </div>
+            <div>
+              <dt>{t("dash.kpi.cacheWriteTokens")}</dt>
+              <dd>{metric(cacheWrite)}</dd>
+            </div>
+          </dl>
           <p>{t("dash.usageOverviewHint")}</p>
-        </div>
+        </section>
+        <section className={`${dashboard.summaryCard} ${dashboard.creditSummary}`}>
+          <div className={dashboard.summaryHeading}>
+            <h2>{t("dash.kpi.credit")}</h2>
+            <span className={dashboard.metricIcon}>
+              <Icon name="leaf" />
+            </span>
+          </div>
+          <div className={dashboard.summaryValue}>
+            <KpiValue label={t("dash.kpi.credit")} display={metric(summary.credit)} exact={null} />
+            <span>Credits</span>
+          </div>
+          <p>
+            {t("dash.vsPrevious", {
+              pct: delta(number(summary.credit), number(previous?.credit)) ?? "—",
+            })}
+          </p>
+          <Spark values={sparkOf("credit")} color="var(--series-credit)" />
+          <p>{t("dash.creditSummaryHint")}</p>
+        </section>
       </div>
       <div className={`${s.kpiGrid} ${dashboard.primaryMetrics}`}>
         {cards.slice(0, 4).map((card) => renderCard(card, true))}

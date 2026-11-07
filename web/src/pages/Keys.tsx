@@ -238,6 +238,7 @@ export function Keys() {
   return (
     <>
       <PageTitle
+        eyebrow={t("page.keysEyebrow")}
         title={t("keys.title")}
         description={t("keys.description")}
         actions={

@@ -5,12 +5,13 @@
 :global(html) {
   min-width: 320px;
   font-family: var(--font);
+  font-synthesis: none;
 }
 :global(body) {
   margin: 0;
   color: var(--text);
   background: var(--page);
-  font: 14px/1.55 var(--font);
+  font: 450 14px/1.55 var(--font);
   -webkit-font-smoothing: antialiased;
 }
 :global(button),
@@ -26,12 +27,12 @@
   justify-content: center;
   gap: 7px;
   min-height: var(--control-height);
-  padding: 5px 10px;
+  padding: 8px 13px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.5;
   text-decoration: none;
@@ -57,12 +58,12 @@
   min-width: 0;
   max-width: 100%;
   min-height: var(--control-height);
-  padding: 5px 10px;
+  padding: 8px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
-  font-size: 13px;
+  font-size: 14px;
 }
 :global(textarea) {
   resize: vertical;
@@ -150,8 +151,8 @@
   font-size: 13px;
 }
 :global(th) {
-  height: 40px;
-  padding: 8px 16px;
+  height: 36px;
+  padding: 8px 12px;
   background: var(--soft);
   color: var(--muted);
   border-block: 1px solid var(--line);
@@ -160,8 +161,8 @@
   white-space: nowrap;
 }
 :global(td) {
-  height: 60px;
-  padding: 10px 16px;
+  height: 48px;
+  padding: 9px 12px;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
 }
@@ -190,18 +191,21 @@
 .app {
   --sidebar-width: 180px;
   --sidebar-motion: 180ms cubic-bezier(0.33, 1, 0.68, 1);
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
   min-height: 100dvh;
-  padding-bottom: 8px;
+  overflow: hidden;
   background: var(--sidebar);
 }
 .app.collapsed {
   --sidebar-width: var(--collapsed-sidebar-width);
 }
 .header {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 30;
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -441,7 +445,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin: 6px 0 6px;
+  margin: 12px 0 6px;
   padding: 0 8px;
   color: var(--text);
   font-size: 11px;
@@ -499,9 +503,9 @@
 .navItem.active {
   background: var(--nav-active-bg);
   color: var(--nav-active-text);
-  font-weight: 600;
+  font-weight: 500;
   box-shadow:
-    inset 3px 0 0 var(--primary),
+    inset 3px 0 0 var(--nav-active-marker),
     inset 0 0 0 1px var(--nav-active-border);
 }
 .sidebarBottom {
@@ -525,15 +529,20 @@
   margin-left: auto;
 }
 .workspace {
+  position: relative;
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
-  min-height: calc(100dvh - var(--header-height) - 8px);
-  margin: 8px 8px 0 calc(var(--sidebar-width) + 8px);
+  min-height: 0;
+  margin: 8px 8px 8px var(--sidebar-width);
   border: 1px solid var(--line);
   border-radius: var(--workspace-radius);
   background: var(--surface);
   box-shadow: var(--shadow);
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
   transition: margin var(--sidebar-motion);
 }
 .main {
@@ -593,13 +602,22 @@
   color: var(--secondary);
   white-space: nowrap;
 }
+.modalOverlay:has(.navigationDrawer) {
+  inset: var(--header-height) 0 0;
+  height: calc(100dvh - var(--header-height));
+  padding: 0;
+}
+.modalOverlay:has(.navigationDrawer)::backdrop {
+  inset: var(--header-height) 0 0;
+}
 .modalOverlay[open]:has(.navigationDrawer) {
   justify-content: flex-start;
-  padding: 8px;
 }
 .drawer.navigationDrawer {
-  width: min(296px, calc(100vw - 32px));
-  border-radius: var(--panel-radius);
+  width: min(208px, calc(100vw - 32px));
+  border-width: 0 1px 0 0;
+  border-radius: 0;
+  background: var(--sidebar);
 }
 .navigationDrawer .drawerHead {
   min-height: 56px;
@@ -610,13 +628,15 @@
   font-size: 16px;
 }
 .navigationDrawer .drawerBody {
+  display: flex;
+  flex-direction: column;
   padding: 16px 12px;
 }
 .navigationDrawer .navGroup + .navGroup {
-  margin-top: 24px;
+  margin-top: 14px;
 }
 .navigationDrawer .navItem {
-  min-height: 44px;
+  min-height: 40px;
 }
 .modalOverlay[open] .drawer.navigationDrawer {
   animation-name: navigationIn;
@@ -635,24 +655,51 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 24px;
+  gap: 20px;
+  margin-bottom: 14px;
 }
 .pageTitle h1 {
-  margin-bottom: 6px;
+  margin-top: 4px;
+  margin-bottom: 3px;
 }
 .pageTitle p:not(.eyebrow) {
   color: var(--muted);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.pageTitle > .actions {
+  align-self: flex-end;
+  padding-bottom: 2px;
+}
+.pageTitle > .actions button,
+.pageTitle > .actions .linkButton,
+.pageTitle > .actions select {
+  min-height: 32px;
+  padding: 5px 10px;
   font-size: 13px;
+}
+.pageEyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 1.7px;
+  line-height: 1.8;
+}
+.pageEyebrow::before {
+  content: "";
+  width: 12px;
+  height: 2px;
+  border-radius: var(--radius-xs);
+  background: var(--primary);
 }
 .eyebrow {
   color: var(--muted);
   font-size: 12px;
   font-weight: 400;
   letter-spacing: 0;
-}
-.pageTitle .eyebrow {
-  display: none;
 }
 .actions {
   display: flex;
@@ -690,23 +737,25 @@
 .kpiGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
-  margin-bottom: 24px;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 .stat,
 .kpiCard {
   position: relative;
   min-width: 0;
-  padding: 18px 20px;
-  background: transparent;
-  border: 0;
+  padding: 12px 14px 11px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--shadow);
 }
 .stat::after,
 .kpiCard::after {
   display: none;
 }
 .kpiCard:nth-child(n + 5) {
-  border-top: 0;
+  border-top: 1px solid var(--line);
 }
 .stat > div,
 .kpiCard > div {
@@ -717,8 +766,8 @@
   color: var(--muted);
   font-size: 12px;
 }
-.stat > div > span,
-.kpiCard > div > span:last-child {
+.stat > div > span:has(> svg),
+.kpiCard > div > span:last-child:has(> svg) {
   display: grid;
   place-items: center;
   width: 24px;
@@ -729,8 +778,8 @@
   display: block;
   margin: 8px 0 6px;
   color: var(--strong);
-  font-size: 26px;
-  font-weight: 550;
+  font-size: 24px;
+  font-weight: 650;
   line-height: 1.25;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -739,8 +788,8 @@
   display: block;
   margin: 6px 0 4px;
   color: var(--strong);
-  font-size: 23px;
-  font-weight: 550;
+  font-size: 24px;
+  font-weight: 650;
   line-height: 1.25;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -775,7 +824,7 @@
   color: var(--text);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  box-shadow: 0 6px 20px var(--shadow);
+  box-shadow: var(--shadow-raised);
   font-size: 12px;
   font-weight: 400;
   white-space: nowrap;
@@ -919,7 +968,7 @@
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 8px 28px var(--shadow);
+  box-shadow: var(--shadow-raised);
   pointer-events: none;
   transform: translateX(-50%);
   font-size: 12px;
@@ -1174,6 +1223,7 @@
 }
 .modalOverlay::backdrop {
   background: var(--veil);
+  backdrop-filter: blur(3px);
 }
 .drawer {
   position: relative;
@@ -1189,7 +1239,7 @@
   border-radius: var(--panel-radius);
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 12px 40px var(--shadow);
+  box-shadow: var(--shadow-raised);
   overflow: hidden;
 }
 .modalOverlay[open] .drawer {
@@ -1782,19 +1832,18 @@
 .loginSubmit {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: center;
+  gap: 8px;
   width: 100%;
   /* Fixed 42px control: padding plus the 1px border must not inflate it. */
   height: 42px;
   min-height: 42px;
-  margin-top: 21px;
+  margin-top: 12px;
   padding: 0 15px;
   font-size: 14px;
   text-decoration: none;
 }
 .loginSubmit > span {
-  flex: 1;
   text-align: center;
 }
 .loginSubmit svg:first-child {
@@ -2339,7 +2388,7 @@
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 8px 24px var(--shadow);
+  box-shadow: var(--shadow-raised);
 }
 .moreMenuList button {
   width: 100%;
@@ -2858,19 +2907,29 @@
   overflow-x: auto;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1250px) {
   .main {
-    padding: 20px;
+    padding: 20px 18px 16px;
   }
+}
+@media (max-width: 1100px) {
   .kpiGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .kpiCard:nth-child(n + 3) {
-    border-top: 0;
+    border-top: 1px solid var(--line);
   }
   .dashboardGrid {
     grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
     gap: 16px;
+  }
+}
+@media (max-width: 1050px) {
+  .loginStory {
+    padding: 35px;
+  }
+  .loginStoryContent h1 {
+    font-size: 31px;
   }
 }
 @media (max-width: 980px) {
@@ -2907,12 +2966,11 @@
     min-height: 32px;
   }
   .workspace {
-    margin: 4px 6px 0;
-    min-height: calc(100dvh - var(--header-height) - 4px);
+    margin: 8px;
     border-radius: var(--radius-md);
   }
   .main {
-    padding: 16px 16px 24px;
+    padding: 18px 16px 14px;
   }
   .pageFooter {
     padding: 12px 16px;
@@ -2953,11 +3011,11 @@
   .pageTitle {
     align-items: flex-start;
     flex-wrap: wrap;
-    gap: 14px;
-    margin-bottom: 20px;
+    gap: 12px;
+    margin-bottom: 14px;
   }
   .pageTitle h1 {
-    font-size: 22px;
+    font-size: 24px;
   }
   .pageTitle > .actions {
     width: 100%;
@@ -2966,7 +3024,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .stat:nth-child(n + 3) {
-    border-top: 0;
+    border-top: 1px solid var(--line);
   }
   .dashboardGrid {
     grid-template-columns: minmax(0, 1fr);
@@ -3030,9 +3088,15 @@
     grid-template-rows: auto 1fr;
   }
   .loginStory {
-    padding: 24px 20px 0;
+    padding: 26px 25px;
     border-right: 0;
     background: var(--surface);
+  }
+  .loginStory .brand {
+    font-size: 23px;
+  }
+  .loginStory .brandTag {
+    display: none;
   }
   .loginStory::after,
   .loginStoryContent,
@@ -3043,26 +3107,38 @@
     /* Static so the theme control anchors to the shell, not to the login
      * column's own box (which starts below the brand row). */
     position: static;
-    align-items: flex-start;
-    padding: 35px 20px 100px;
+    align-items: center;
+    min-height: calc(100dvh - 88px);
+    padding: 35px 30px 100px;
   }
   .loginTheme {
-    top: 12px;
-    right: 16px;
+    top: 25px;
+    right: 24px;
   }
   .loginCard {
+    max-width: 330px;
     margin-inline: auto;
+    margin-bottom: 35px;
+  }
+  .loginLock {
+    margin-bottom: 26px;
+  }
+  .loginCard h2 {
+    font-size: 26px;
+  }
+  .loginCard > p {
+    font-size: 14px;
   }
 }
 @media (max-width: 440px) {
   .main {
     padding-inline: 14px;
   }
-  .brandIcon {
+  .header .brandIcon {
     width: 26px;
     height: 26px;
   }
-  .brandIcon svg {
+  .header .brandIcon svg {
     width: 18px;
     height: 18px;
   }
@@ -3144,7 +3220,7 @@
   }
   .stat,
   .kpiCard {
-    padding: 14px 12px;
+    padding: 11px 12px 10px;
   }
   .stat strong {
     font-size: 24px;
@@ -3172,9 +3248,6 @@
   .cleanupBox {
     align-items: flex-start;
     flex-wrap: wrap;
-  }
-  .loginMain {
-    padding-inline: 18px;
   }
   .loginCard {
     padding: 0;
@@ -3349,6 +3422,9 @@
   width: 14px;
   height: 14px;
 }
+.keysTable {
+  min-width: 1040px;
+}
 .keysTable :is(th, td) {
   padding-inline: 12px;
 }
@@ -3356,6 +3432,7 @@
   white-space: nowrap;
 }
 .keysTable .wrapCell {
+  min-width: 120px;
   white-space: normal;
   overflow-wrap: break-word;
 }
@@ -3366,7 +3443,7 @@
   padding: 12px;
   border-radius: 10px;
   background: var(--surface-tint);
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: var(--mono);
 }
 .channelTrack {
   background: var(--surface);
@@ -3468,11 +3545,9 @@
   left: 0;
   opacity: 0;
   border: 1px solid var(--accent);
-  border-radius: 14px;
-  background: linear-gradient(var(--selected), var(--selected)), var(--surface);
-  box-shadow:
-    inset 0 1px 0 var(--highlight),
-    0 4px 14px var(--shadow);
+  border-radius: var(--radius-sm);
+  background: var(--selected);
+  box-shadow: var(--shadow);
   pointer-events: none;
 }
 .statusPills .segmentThumb,
@@ -3816,31 +3891,32 @@
 .releaseItem {
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow-raised);
+  box-shadow: var(--shadow);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
   padding: 10px 12px;
-  border-radius: 14px;
+  border-radius: var(--panel-radius);
   color: var(--text);
   text-decoration: none;
   font-size: 12px;
   transition:
-    transform 0.18s ease,
-    box-shadow 0.18s ease;
+    background 140ms,
+    border-color 140ms;
 }
 .releaseItem:hover {
-  transform: translateY(-1px);
+  background: var(--surface-subtle);
+  border-color: var(--line-strong);
 }
 .updateProgress {
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow-raised);
+  box-shadow: var(--shadow);
   display: grid;
   gap: 10px;
   padding: 16px 18px;
-  border-radius: 18px;
+  border-radius: var(--panel-radius);
 }
 .progressHead {
   display: flex;
@@ -3856,47 +3932,24 @@
 }
 .progressTrack {
   position: relative;
-  height: 12px;
+  height: 6px;
   border-radius: 999px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--surface) 45%, transparent);
-  border: 1px solid var(--highlight);
-  box-shadow:
-    inset 0 1px 3px var(--shadow),
-    inset 0 -1px 0 var(--highlight);
+  background: var(--line);
 }
 .progressFill {
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: inherit;
-  background:
-    linear-gradient(180deg, #ffffff66, transparent 55%),
-    repeating-linear-gradient(-45deg, #ffffff38 0 8px, transparent 8px 16px),
-    linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #9ad7c4));
-  background-size:
-    100% 100%,
-    22.6px 100%,
-    100% 100%;
-  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--primary);
   transition: width 0.45s ease;
-  animation: progressFlow 0.9s linear infinite;
 }
 .progressIndeterminate {
   width: 38%;
-  animation:
-    progressFlow 0.9s linear infinite,
-    progressSweep 1.4s ease-in-out infinite;
+  animation: progressSweep 1.4s ease-in-out infinite;
 }
 .progressDone {
   animation: none;
-}
-@keyframes progressFlow {
-  to {
-    background-position:
-      0 0,
-      22.6px 0,
-      0 0;
-  }
 }
 @keyframes progressSweep {
   from {
@@ -3917,7 +3970,7 @@
 .stepList li {
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow-raised);
+  box-shadow: var(--shadow);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -3962,13 +4015,13 @@
 .mirrorList li {
   background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow-raised);
+  box-shadow: var(--shadow);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
   padding: 9px 12px;
-  border-radius: 14px;
+  border-radius: var(--panel-radius);
   font-size: 12px;
 }
 .mirrorList li.mirrorCurrent {
@@ -4296,9 +4349,7 @@
 .sidebarBar svg {
   flex-shrink: 0;
 }
-.collapsed .brandText,
 .collapsed .navLabel,
-.collapsed .navText,
 .collapsed .navArrow,
 .collapsed .sidebarBarText {
   display: none;
@@ -4397,7 +4448,6 @@
 .sidebarBar {
   background: color-mix(in srgb, var(--surface) 70%, transparent);
 }
-.navItem,
 .header,
 .eyebrow,
 .navLabel,
@@ -4787,17 +4837,18 @@
   display: block;
   width: 100%;
   padding: 0;
-  border-radius: 16px;
+  border-radius: var(--panel-radius);
+  box-shadow: var(--shadow);
   overflow: hidden;
   text-align: start;
   cursor: pointer;
   transition:
-    transform 0.16s ease,
-    box-shadow 0.16s ease;
+    background 140ms,
+    border-color 140ms;
 }
 .mediaCard:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow);
+  background: var(--surface-subtle);
+  border-color: var(--line-strong);
 }
 .mediaCard:focus-visible {
   outline: 2px solid var(--accent);
@@ -4859,7 +4910,7 @@
   max-height: 60vh;
   margin-inline: auto;
   object-fit: contain;
-  border-radius: 14px;
+  border-radius: var(--panel-radius);
   background: var(--card);
 }
 @media (max-width: 600px) {

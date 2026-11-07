@@ -1095,6 +1095,7 @@ export function Credentials() {
   return (
     <>
       <PageTitle
+        eyebrow={t("page.credentialsEyebrow")}
         title={t("nav.credentials")}
         description={t("credentials.description")}
         actions={
@@ -1166,7 +1167,7 @@ export function Credentials() {
                 key={key}
                 type="button"
                 aria-pressed={active}
-                className={active ? s.channelActive : ""}
+                className={`${s.channelCard} ${active ? s.channelActive : ""}`}
                 title={
                   hasNumeric
                     ? `${group.length} 个账号 · 剩余额度 ${metric(totalCredits)}${unlimited ? ` (+${unlimited} 无限)` : ""}`

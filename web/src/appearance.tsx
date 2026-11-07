@@ -84,7 +84,7 @@ function persistLanguage(value: LangPref) {
 export function Appearance() {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const { mode, persisted } = useAppearance();
+  const { mode, dark, persisted } = useAppearance();
   useEffect(initializeAppearance, []);
   return (
     <>
@@ -96,7 +96,7 @@ export function Appearance() {
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}
       >
-        <Icon name="appearance" />
+        <Icon name={dark ? "sun" : "moon"} />
       </button>
       <DrawerPresence>
         {open && (

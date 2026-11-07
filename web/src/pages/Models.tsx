@@ -858,6 +858,7 @@ export function Models() {
   return (
     <>
       <PageTitle
+        eyebrow={t("page.modelsEyebrow")}
         title={t("nav.models")}
         description={t("models.description")}
         actions={

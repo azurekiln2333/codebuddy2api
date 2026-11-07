@@ -8,8 +8,6 @@
   --primary: #3169df;
   --primary-hover: #2459ca;
   --primary-soft: #edf3ff;
-  --surface-tint: var(--primary-soft);
-  --card: var(--surface-subtle);
   --on-primary: #fff;
   --strong: #1b2430;
   --text: #232b3a;
@@ -28,6 +26,7 @@
   --nav-active-bg: #cfddf2;
   --nav-active-border: #9fb5d6;
   --nav-active-text: #000;
+  --nav-active-marker: #1e40af;
   --primary-line: #c9d9f5;
   /* Brand mark keeps the fixed product blue in both themes. */
   --brand: #3169df;
@@ -46,16 +45,16 @@
   --series-tokens: #209d77;
   --series-credit: #b88125;
   --font:
-    "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", -apple-system,
-    BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  /* Radius scale: 4 / 8 / 12 / 16 / 20 / 999 matching the reference console. */
+    "DM Sans Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+    "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --mono: "JetBrains Mono Variable", "Cascadia Code", Consolas, monospace;
+  /* Radius scale: 4 / 8 / 12 / 16 / 28 / 999 matching the reference console. */
   --radius-xs: 4px;
   --radius-sm: 8px;
   --radius: 12px;
   --radius-md: var(--radius);
   --radius-lg: 16px;
-  --radius-xl: 20px;
+  --radius-xl: 28px;
   --radius-full: 999px;
   --panel-radius: var(--radius);
   --workspace-radius: var(--radius-lg);
@@ -87,9 +86,9 @@
   --surface-tint: #232a36;
   --soft: #20262f;
   --selected: #263653;
-  --nav-active-bg: #24344f;
-  --nav-active-border: #3f5d8c;
-  --nav-active-text: #e7edf6;
+  --nav-active-bg: #b8cceb;
+  --nav-active-border: #829dc6;
+  --nav-active-text: #000;
   --primary-line: #35507c;
   --brand: #3169df;
   --shadow: none;

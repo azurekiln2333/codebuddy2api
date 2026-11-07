@@ -111,6 +111,11 @@ export function Guard() {
 function Shell() {
   const t = useT();
   const location = useLocation();
+  const workspace = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Routes share one scroll container, but each page starts at its heading.
+    if (workspace.current) workspace.current.scrollTop = 0;
+  }, [location.pathname]);
   const user = useSession((state) => state.user);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -326,7 +331,7 @@ function Shell() {
           {renderNavigation(true)}
         </Drawer>
       )}
-      <div className={s.workspace}>
+      <div className={s.workspace} ref={workspace}>
         <main id="main" className={s.main}>
           <ErrorNotice message={error} />
           <Outlet />
@@ -410,7 +415,7 @@ function Login() {
           <h2>{forbidden ? t("app.accessDenied") : t("login.codebuddy2apiSignIn")}</h2>
           <p>{t("login.accessHint")}</p>
           <ErrorNotice message={error} />
-          <a className={`${s.linkButton} ${s.loginSubmit} ${s.primary}`} href={SSO_LOGIN_URL}>
+          <a className={`${s.linkButton} ${s.loginSubmit}`} href={SSO_LOGIN_URL}>
             <Icon name="shield" size={16} />
             <span>{forbidden ? t("app.otherAccount") : t("login.ssoSignIn")}</span>
             <Icon name="arrow" size={16} />
