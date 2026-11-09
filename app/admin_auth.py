@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import admin_account
+from . import platform_token
 
 COOKIE_NAME = "cb_admin_session"
 SESSION_TTL = 12 * 3600
@@ -555,12 +556,15 @@ class AdminAuth:
 
 
 class AdminMiddleware:
-    def __init__(self, app, auth, dispatch=None):
-        self.app, self.auth, self.dispatch = app, auth, dispatch
+    def __init__(self, app, auth, dispatch=None, token: str = ""):
+        self.app, self.auth, self.dispatch, self.token = app, auth, dispatch, token
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope["path"].startswith("/admin/"):
             return await self.app(scope, receive, send)
+        if await platform_token.authorize(
+                scope, receive, send, token=self.token, dispatch=self.dispatch, app=self.app):
+            return
         request = Request(scope, receive)
 
         renewal = None

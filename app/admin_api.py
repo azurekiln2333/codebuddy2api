@@ -90,7 +90,7 @@ def _public_credential(item):
     return result
 
 
-def install_admin(app, config, gateway, sso=None):
+def install_admin(app, config, gateway, sso=None, platform_token=""):
     """Install management routes using configured stores, stable inventory IDs and safe filenames.
 
     ``sso`` is an active :class:`app.sso_auth.SSOService` when native OIDC mode is
@@ -262,10 +262,14 @@ def install_admin(app, config, gateway, sso=None):
         return None
 
     # Middleware is deliberately installed only here, never on module import.
+    # ``platform_token`` is empty unless PLATFORM_TOKEN is configured, so the
+    # browser-facing guards below keep their original behaviour.
     if sso_mode:
-        app.add_middleware(SSOAdminMiddleware, sso=sso, config=config, dispatch=dispatch)
+        app.add_middleware(SSOAdminMiddleware, sso=sso, config=config, dispatch=dispatch,
+                           token=platform_token)
     else:
-        app.add_middleware(AdminMiddleware, auth=auth, dispatch=dispatch)
+        app.add_middleware(AdminMiddleware, auth=auth, dispatch=dispatch,
+                           token=platform_token)
     app.state.admin_auth = auth
     app.state.sso = sso
     app.state.admin_installed = True

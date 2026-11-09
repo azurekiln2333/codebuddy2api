@@ -34,6 +34,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from .sso_config import SSOConfig
 from .sso_oidc import OidcClient, OidcError, create_code_verifier, random_token
+from . import platform_token
 
 SESSION_COOKIE = "cb_sso_session"
 TRANSACTION_COOKIE = "cb_sso_txn"
@@ -514,11 +515,12 @@ class SSOAdminMiddleware:
     ownership) keep working.
     """
 
-    def __init__(self, app, sso: SSOService, config: dict, dispatch=None):
+    def __init__(self, app, sso: SSOService, config: dict, dispatch=None, token: str = ""):
         self.app = app
         self.sso = sso
         self.config = config
         self.dispatch = dispatch
+        self.token = token
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not str(scope.get("path", "")).startswith("/admin/"):
@@ -526,6 +528,9 @@ class SSOAdminMiddleware:
         request = Request(scope, receive)
         path = scope["path"]
         method = scope.get("method", "GET")
+        if await platform_token.authorize(
+                scope, receive, send, token=self.token, dispatch=self.dispatch, app=self.app):
+            return
         if path == "/admin/session":
             return await self._session(scope, receive, send, request, method)
         try:

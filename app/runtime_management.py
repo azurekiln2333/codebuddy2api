@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import buddy
 from .admin_api import install_admin
+from .platform_token import platform_token_from_env
 from .api_keys import KeyStore
 from .audit_store import AuditStore
 from .backups import Backups
@@ -141,7 +142,8 @@ def install(gateway):
     config, app = gateway.CONFIG, gateway.app
     sso = config.get("sso")
     service = install_sso(app, config) if sso is not None and sso.enabled else None
-    install_admin(app, config, config["management"], sso=service)
+    install_admin(app, config, config["management"], sso=service,
+                  platform_token=platform_token_from_env(os.environ))
     app.add_middleware(AuditMiddleware, config=config)
     app.add_middleware(PolicyScopeMiddleware)
     from .inbound_limits import ConcurrencyLimitMiddleware, InboundBodyLimitMiddleware
