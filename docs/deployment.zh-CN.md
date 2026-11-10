@@ -218,9 +218,9 @@ uv run --locked --no-build converter.py --host 127.0.0.1 --port 8787
 
 `uv.lock` 过期时 `--locked` 会直接失败而不是重新解析，因此源码启动不会升级依赖。当前工作目录的 `.env` 会被自动读取，`uv run` 无需 `--env-file`。发行包已包含 WebUI，可跳过界面构建。
 
-这种零配置模式只是 API 兼容模式。新版控制台没有 key 登录入口，即使在本机回环也必须先配置控制台登录（SSO）才能打开 `/dashboard`。要在本机使用控制台，请导出 `CODEBUDDY2API_SSO_ENABLED=true`、`PUBLIC_ORIGIN=http://127.0.0.1:8787`、`OIDC_ISSUER`、`OIDC_CLIENT_ID`、`OIDC_CLIENT_SECRET` 与 `ALLOW_INSECURE_LOCALHOST=true`，并在身份提供方注册回调 `http://127.0.0.1:8787/sso/callback`。`ALLOW_INSECURE_LOCALHOST` 仅对回环来源放宽明文 HTTP，其它环境必须保持 `false`。
+这种零配置模式只是 API 兼容模式，控制台无需任何 SSO 配置即可使用：设置 `PANEL_ADMIN_KEY` 并用它登录，本机回环也一样。想在本机用 SSO，则在「设置 → 认证」里启用，或导出 `CODEBUDDY2API_SSO_ENABLED=true`、`PUBLIC_ORIGIN=http://127.0.0.1:8787`、`OIDC_ISSUER`、`OIDC_CLIENT_ID`、`OIDC_CLIENT_SECRET`、白名单（`CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` 或 `CODEBUDDY2API_SSO_ALLOWED_EMAILS`）与 `ALLOW_INSECURE_LOCALHOST=true`，并在身份提供方注册回调 `http://127.0.0.1:8787/sso/callback`。`ALLOW_INSECURE_LOCALHOST` 仅对回环来源放宽明文 HTTP，其它环境必须保持 `false`。
 
-SSO 关闭时，后端兼容模式使用独立的本地管理账号；外部密钥可作为初始密码，未配置时启动会显示随机初始密码（无控制终端时写入启动输出）。该模式不提供本 fork 控制台的密码登录。推理密钥不会自动创建，需预先配置外部密钥或通过管理 API 创建。
+SSO 关闭时，后端兼容模式同样保留独立的本地管理账号作为内层边界；外部密钥可作为初始密码，未配置时启动会显示随机初始密码（无控制终端时写入启动输出）。控制台优先使用 `PANEL_ADMIN_KEY`，不把该密码作为登录方式提供。推理密钥不会自动创建，需预先配置外部密钥或通过管理 API 创建。
 
 旧版保存的默认 key 会在首次启动时迁移为初始管理密码和数据库管理密钥；数据库密钥不会提升为 `CODEBUDDY2API_KEY`。修改管理密码后，后续登录不再跟随外部密钥变化，并撤销已有会话。密码只保存 scrypt 哈希。
 
