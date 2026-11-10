@@ -37,7 +37,7 @@ docker compose pull
 docker compose up -d --no-build
 ```
 
-Compose pulls `latest` by default (`CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest`); images also publish the release version (for example `1.6.0`) and `edge` for `main`. Pin a version tag for reproducible deployments; image features belong to that version, not to unmerged source branches.
+Compose pulls `latest` by default (`CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest`); images also publish the release version (for example `1.6.1`) and `edge` for `main`. Pin a version tag for reproducible deployments; image features belong to that version, not to unmerged source branches.
 
 First use:
 
