@@ -7,7 +7,7 @@ CodeBuddy2Api 的浏览器管理控制台。它是构建到 `/dashboard/` 的静
 - **品牌：** CodeBuddy2Api
 - **形态：** 静态 SPA（无独立服务端、无内置密钥、无生产环境假数据）
 - **基础路径：** `/dashboard/`
-- **认证：** 仅统一身份（SSO）。浏览器不接触、不保存管理密钥
+- **认证：** 面板密钥与统一身份（SSO）两种登录方式。浏览器只用会话 Cookie，不保存密钥
 
 ## 功能
 
@@ -15,7 +15,8 @@ CodeBuddy2Api 的浏览器管理控制台。它是构建到 `/dashboard/` 的静
 - 模型路由：启停、对外/上游 ID、凭证或区域绑定、能力预检。
 - 凭证管理：导入导出、上游 OAuth 账号登记、自动任务。
 - 媒体生成：图像与视频任务、本地资源查看和管理。
-- 密钥管理：创建、限制、禁用和轮换推理 API key，使用当前 SSO 管理会话授权。
+- 密钥管理：创建、限制、禁用和轮换推理 API key，使用当前管理会话授权。
+- 登录与 SSO：在设置页启用单点登录、编辑颁发者与白名单、关闭面板密钥登录。
 - 日志审计：请求、运行事件与管理操作，支持分范围清理。
 - 存储管理：归档、清理与压缩指引。
 - 系统设置：可修改 / 外部锁定 / 系统只读三类来源视图。
@@ -53,12 +54,20 @@ pnpm exec playwright test   # 浏览器契约与几何回归
 
 ## 认证工作方式
 
-1. SPA 调用 `GET /sso/session`。
-2. 只有 `{ authenticated: true, csrf_token, user: { …, role: "admin" } }` 才会渲染控制台。
-3. 写请求携带 `X-CSRF-Token`，令牌只保存在内存。
-4. `401` 清除会话回到登录页；`403` 显示无管理权限/权限已撤回。
-5. 登录链接为 `/sso/login?return_to=/dashboard/`；`/sso/callback` 由服务端处理；
-   `POST /sso/logout` 同样携带 CSRF 头。
+1. SPA 调用 `GET /sso/config` 取得登录方式：`keyLoginEnabled` 决定是否显示面板密钥表单，
+   `sso.enabled` 决定是否显示单点登录按钮，两者可以同时出现。
+2. 会话恢复先调用 `GET /sso/session`。未登录时再调用 `GET /admin/session`。
+3. 只有 `{ authenticated: true, csrf_token, user }` 才会渲染控制台。
+   SSO 会话要求 `role: "admin"`；面板密钥会话只需持有密钥。
+4. 写请求携带 `X-CSRF-Token`，令牌只保存在内存。
+5. `401` 清除会话回到登录页；`403` 显示无管理权限/权限已撤回。
+6. 面板密钥登录调用 `POST /admin/session { key }`，退出调用 `DELETE /admin/session`。
+7. 单点登录链接为 `/sso/login?return_to=/dashboard/`；`/sso/callback` 由服务端处理；
+   退出调用 `POST /sso/logout`。两种退出都带 CSRF 头。
+8. 回调失败时 URL 带有 `auth_error`，登录页会显示对应原因。
+
+设置页的「登录与 SSO」区读写 `GET`/`PATCH /admin/auth/settings`。
+Client Secret 只写不读，接口只返回 `hasClientSecret`。
 
 ## 目录结构
 
@@ -85,8 +94,8 @@ dist/             构建产物（不提交）
 
 它源自原始 **codebuddy2api** 的 web 控制台（MIT），其许可全文以
 [`LICENSE.upstream`](LICENSE.upstream) 原样保留并随构建产物分发。
-本次修改包括品牌统一为 CodeBuddy2Api、改为统一身份（SSO）登录并移除浏览器端
-管理密钥，以及按参考控制台重做加载屏、登录页与控制台外壳。
+本次修改包括品牌统一为 CodeBuddy2Api、增加面板密钥登录并保留统一身份（SSO）、
+把登录与 SSO 配置放进设置页，以及按参考控制台重做加载屏、登录页与控制台外壳。
 
 第三方依赖清单与完整许可文本见
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；构建时汇总的全文在

@@ -25,13 +25,19 @@ async function session(page: Page): Promise<{ status: number; body: SessionPaylo
 async function signInThroughTheUi(page: Page) {
   await page.goto("/dashboard/");
   await expect(page).toHaveURL(/\/dashboard\/login$/);
-  // The console offers exactly one way in: the identity provider.
+  // The login page follows the gateway's public config: the key form appears
+  // only when a panel key is configured for this fixture.
+  const config = (await (await page.request.get("/sso/config")).json()) as {
+    keyLoginEnabled?: boolean;
+  };
   await expect(page.getByRole("link", { name: "使用统一身份登录" })).toHaveAttribute(
     "href",
     "/sso/login?return_to=/dashboard/",
   );
   expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
-  expect(await page.locator('input[type="password"]').count()).toBe(0);
+  if (config.keyLoginEnabled === true)
+    await expect(page.getByLabel("面板密钥", { exact: true })).toBeVisible();
+  else expect(await page.locator('input[type="password"]').count()).toBe(0);
 
   await page.getByRole("link", { name: "使用统一身份登录" }).click();
   // Real redirect chain: /sso/login -> provider /authorize -> /sso/callback -> console.
