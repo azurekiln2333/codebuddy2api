@@ -55,17 +55,17 @@ describe("console auth settings", () => {
 
   it("patches the enabled flag and the allow-lists, and omits a blank secret", async () => {
     const writes: InternalAxiosRequestConfig[] = [];
+    // A stored secret lets the SSO switch pass the local rules, so the patch
+    // still proves that a blank secret is omitted from the body.
+    const stored = { ...gatewaySettings, hasClientSecret: true };
     api.defaults.adapter = (config) => {
       if (config.method === "patch") {
         writes.push(config);
         return Promise.resolve(
-          response(
-            { ...gatewaySettings, ssoEnabled: true, issuer: "https://sso.example.com" },
-            config,
-          ),
+          response({ ...stored, ssoEnabled: true, issuer: "https://sso.example.com" }, config),
         );
       }
-      return Promise.resolve(response(gatewaySettings, config));
+      return Promise.resolve(response(stored, config));
     };
     render(<AuthSettingsPanel />);
     fireEvent.click(await screen.findByRole("checkbox", { name: "停用" }));
@@ -113,6 +113,16 @@ describe("console auth settings", () => {
   });
 
   it("surfaces the gateway refusal when closing key login without an SSO session", async () => {
+    // The local rules pass (SSO enabled with a stored secret), so the request
+    // goes out and the gateway's own refusal has to reach the operator.
+    const enabled = {
+      ...gatewaySettings,
+      ssoEnabled: true,
+      hasClientSecret: true,
+      issuer: "https://sso.example.com",
+      clientId: "console",
+      allowedSubjects: ["admin-1"],
+    };
     api.defaults.adapter = (config) =>
       config.method === "patch"
         ? Promise.reject(
@@ -122,11 +132,64 @@ describe("console auth settings", () => {
               config,
             ),
           )
-        : Promise.resolve(response(gatewaySettings, config));
+        : Promise.resolve(response(enabled, config));
     render(<AuthSettingsPanel />);
     await screen.findByText("面板密钥登录已开启");
     fireEvent.click(screen.getByLabelText("面板密钥登录已开启"));
     fireEvent.click(screen.getByRole("button", { name: /保存/ }));
     expect((await screen.findByRole("alert")).textContent).toContain("请先通过 SSO 登录验证");
+  });
+
+  it("refuses to disable key login locally while SSO is not ready", async () => {
+    const writes: InternalAxiosRequestConfig[] = [];
+    api.defaults.adapter = (config) => {
+      if (config.method === "patch") writes.push(config);
+      return Promise.resolve(response(gatewaySettings, config));
+    };
+    render(<AuthSettingsPanel />);
+    await screen.findByText("面板密钥登录已开启");
+    fireEvent.click(screen.getByLabelText("面板密钥登录已开启"));
+    // The inline guard states the risk before a request is even built.
+    expect(screen.getByText("关闭面板密钥登录前请先启用有效的 SSO。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /保存/ }));
+    await waitFor(() => expect(writes).toHaveLength(0));
+    expect(screen.getByRole("alert").textContent).toContain("关闭面板密钥登录前请先启用有效");
+  });
+
+  it("blocks enabling SSO until the provider values and an allow-list are present", async () => {
+    const writes: InternalAxiosRequestConfig[] = [];
+    api.defaults.adapter = (config) => {
+      if (config.method === "patch") writes.push(config);
+      return Promise.resolve(response(gatewaySettings, config));
+    };
+    render(<AuthSettingsPanel />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "停用" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存/ }));
+    await waitFor(() => expect(writes).toHaveLength(0));
+    expect(screen.getByRole("alert").textContent).toContain("启用 SSO 需要填写颁发者地址");
+
+    fireEvent.change(screen.getByLabelText("颁发者地址"), {
+      target: { value: "https://sso.example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Client ID"), { target: { value: "console" } });
+    fireEvent.change(screen.getByLabelText("Client Secret"), { target: { value: "s3cret" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存/ }));
+    await waitFor(() => expect(writes).toHaveLength(0));
+    expect(screen.getByRole("alert").textContent).toContain(
+      "启用 SSO 需要至少一个管理员 subject 或邮箱白名单",
+    );
+  });
+
+  it("reveals the secret on request and marks unsaved edits", async () => {
+    api.defaults.adapter = (config) => Promise.resolve(response(gatewaySettings, config));
+    render(<AuthSettingsPanel />);
+    const secret = (await screen.findByLabelText("Client Secret")) as HTMLInputElement;
+    fireEvent.click(screen.getByLabelText("显示 Client Secret"));
+    expect(secret.type).toBe("text");
+    fireEvent.click(screen.getByLabelText("隐藏 Client Secret"));
+    expect(secret.type).toBe("password");
+    expect(screen.queryByText(/有未保存修改/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Client ID"), { target: { value: "console" } });
+    expect(screen.getByText(/有未保存修改/)).toBeTruthy();
   });
 });

@@ -3,12 +3,14 @@ import {
   errorMessage,
   readAuthSettings,
   saveAuthSettings,
+  useAuthConfig,
   type AuthSettings,
   type AuthSettingsPatch,
 } from "./api";
 import { Badge, ErrorNotice, Icon, Panel } from "./components";
 import { useT } from "./i18n";
 import m from "./management.module.scss";
+import { notify } from "./toast";
 import s from "./ui.module.scss";
 
 // Both login methods are configured here and stored by the gateway, so an
@@ -54,14 +56,40 @@ function isMissingRoute(error: unknown): boolean {
   return status === 404 || status === 405;
 }
 
+// The gateway enforces the same rules; repeating them here turns a failed
+// round-trip into an immediate hint next to the field (design D2.4).
+function problem(draft: Draft, hasStoredSecret: boolean): string | null {
+  const subjects = entries(draft.allowedSubjects);
+  const emails = entries(draft.allowedEmails);
+  const secretReady = hasStoredSecret || draft.clientSecret.trim().length > 0;
+  if (draft.ssoEnabled) {
+    if (!draft.issuer.trim()) return "启用 SSO 需要填写颁发者地址。";
+    if (!/^https?:\/\/\S+$/i.test(draft.issuer.trim()))
+      return "颁发者地址需要完整的 http(s) 地址，例如 https://sso.example.com。";
+    if (!draft.clientId.trim()) return "启用 SSO 需要填写 Client ID。";
+    if (!secretReady) return "启用 SSO 需要填写 Client Secret。";
+    if (!subjects.length && !emails.length)
+      return "启用 SSO 需要至少一个管理员 subject 或邮箱白名单。";
+    if (!draft.scope.split(/\s+/).includes("openid")) return "Scope 必须包含 openid。";
+  }
+  const badEmail = emails.find((email) => !/^[^@\s]+@[^@\s]+$/.test(email));
+  if (badEmail) return `邮箱白名单里的 ${badEmail} 不是有效邮箱地址。`;
+  if (!draft.keyLoginEnabled && !(draft.ssoEnabled && secretReady))
+    return "关闭面板密钥登录前请先启用有效的 SSO，否则将无法进入控制台。";
+  return null;
+}
+
 export function AuthSettingsPanel() {
   const t = useT();
   const id = useId();
+  const authConfig = useAuthConfig();
   const [settings, setSettings] = useState<AuthSettings | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [snapshot, setSnapshot] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [showSecret, setShowSecret] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A gateway without the route keeps the console usable; the section says so
   // instead of occupying the page's error channel.
@@ -70,8 +98,11 @@ export function AuthSettingsPanel() {
     setLoading(true);
     void readAuthSettings()
       .then((value) => {
+        const next = draftOf(value);
         setSettings(value);
-        setDraft(draftOf(value));
+        setDraft(next);
+        setSnapshot(JSON.stringify(next));
+        setShowSecret(false);
         setUnavailable(false);
         setError(null);
       })
@@ -90,8 +121,15 @@ export function AuthSettingsPanel() {
     setSaved(false);
     setDraft((old) => (old ? { ...old, [key]: value } : old));
   };
+  const dirty = draft ? JSON.stringify(draft) !== snapshot : false;
   const save = () => {
     if (!draft) return;
+    const refusal = problem(draft, Boolean(settings?.hasClientSecret));
+    if (refusal) {
+      setSaved(false);
+      setError(refusal);
+      return;
+    }
     setBusy(true);
     setError(null);
     setSaved(false);
@@ -109,13 +147,27 @@ export function AuthSettingsPanel() {
     if (draft.clientSecret.trim()) patch.clientSecret = draft.clientSecret.trim();
     void saveAuthSettings(patch)
       .then((value) => {
+        const next = draftOf(value);
         setSettings(value);
-        setDraft(draftOf(value));
+        setDraft(next);
+        setSnapshot(JSON.stringify(next));
         setSaved(true);
+        notify({ key: "auth-settings-saved", tone: "good", title: "登录设置已保存" });
       })
       .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => setBusy(false));
   };
+  const copy = (value: string) => {
+    void navigator.clipboard
+      .writeText(value)
+      .then(() => notify({ key: "auth-settings-copied", tone: "good", title: "已复制" }))
+      .catch((reason: unknown) => setError(errorMessage(reason)));
+  };
+  const keyLoginBlocked = Boolean(
+    draft &&
+    !draft.keyLoginEnabled &&
+    !(draft.ssoEnabled && (settings?.hasClientSecret || draft.clientSecret.trim())),
+  );
   return (
     <Panel
       title="登录与 SSO"
@@ -143,7 +195,7 @@ export function AuthSettingsPanel() {
           <div className={m.settingRow}>
             <div className={`${s.settingDescription} ${m.settingDescription}`}>
               <strong>启用单点登录</strong>
-              <small>保存后会先校验颁发者的 discovery 文档。</small>
+              <small>允许管理员通过外部 OIDC 提供方登录控制台。</small>
             </div>
             <div className={`${s.settingControl} ${m.settingControl}`}>
               <span className={s.check}>
@@ -179,7 +231,7 @@ export function AuthSettingsPanel() {
           <div className={m.settingRow}>
             <div className={`${s.settingDescription} ${m.settingDescription}`}>
               <strong>Client ID</strong>
-              <small>OIDC 客户端标识。</small>
+              <small>在 SSO 提供方登记的客户端编号。</small>
             </div>
             <div className={`${s.settingControl} ${m.settingControl}`}>
               <label className={s.field}>
@@ -202,7 +254,7 @@ export function AuthSettingsPanel() {
               <label className={s.field}>
                 <span className={s.srOnly}>Client Secret</span>
                 <input
-                  type="password"
+                  type={showSecret ? "text" : "password"}
                   value={draft.clientSecret}
                   disabled={busy}
                   autoComplete="new-password"
@@ -212,12 +264,21 @@ export function AuthSettingsPanel() {
                   onChange={(e) => update("clientSecret", e.target.value)}
                 />
               </label>
+              <button
+                type="button"
+                className={s.linkButton}
+                disabled={busy}
+                aria-label={showSecret ? "隐藏 Client Secret" : "显示 Client Secret"}
+                onClick={() => setShowSecret((shown) => !shown)}
+              >
+                <Icon name={showSecret ? "eyeOff" : "eye"} />
+              </button>
             </div>
           </div>
           <div className={m.settingRow}>
             <div className={`${s.settingDescription} ${m.settingDescription}`}>
               <strong>Scope</strong>
-              <small>必须包含 openid。</small>
+              <small>至少包含 openid；邮箱白名单需要 email。</small>
             </div>
             <div className={`${s.settingControl} ${m.settingControl}`}>
               <label className={s.field}>
@@ -285,12 +346,40 @@ export function AuthSettingsPanel() {
           <div className={m.settingRow}>
             <div className={`${s.settingDescription} ${m.settingDescription}`}>
               <strong>回调地址</strong>
-              <small>在 SSO 后台登记这个地址。</small>
+              <small>在 SSO 提供方登记这个地址，只读。</small>
             </div>
             <div className={`${s.settingControl} ${m.settingControl}`}>
-              <code className={m.settingKey}>{settings?.callbackUrl || "—"}</code>
+              <code className={m.settingKey}>{settings?.callbackUrl || "保存后由网关生成"}</code>
+              <button
+                type="button"
+                className={s.linkButton}
+                aria-label="复制回调地址"
+                disabled={!settings?.callbackUrl}
+                onClick={() => settings?.callbackUrl && copy(settings.callbackUrl)}
+              >
+                <Icon name="copy" />
+              </button>
             </div>
           </div>
+          {authConfig.sso.loginUrl && (
+            <div className={m.settingRow}>
+              <div className={`${s.settingDescription} ${m.settingDescription}`}>
+                <strong>单点登录入口</strong>
+                <small>可直接用它开始登录。</small>
+              </div>
+              <div className={`${s.settingControl} ${m.settingControl}`}>
+                <code className={m.settingKey}>{authConfig.sso.loginUrl}</code>
+                <button
+                  type="button"
+                  className={s.linkButton}
+                  aria-label="复制单点登录入口"
+                  onClick={() => copy(authConfig.sso.loginUrl)}
+                >
+                  <Icon name="copy" />
+                </button>
+              </div>
+            </div>
+          )}
           <div className={m.settingRow}>
             <div className={`${s.settingDescription} ${m.settingDescription}`}>
               <strong>关闭面板密钥登录</strong>
@@ -311,10 +400,15 @@ export function AuthSettingsPanel() {
               </span>
             </div>
           </div>
+          {keyLoginBlocked && <p className={s.note}>关闭面板密钥登录前请先启用有效的 SSO。</p>}
           <div className={m.settingsFooter}>
             <div aria-live="polite">
               <strong>{saved ? t("settings.saved") : t("settings.saveHint")}</strong>
+              {dirty && !saved && <small> · 有未保存修改</small>}
             </div>
+            <button type="button" className={s.linkButton} disabled={busy} onClick={load}>
+              重新读取
+            </button>
             <button type="button" className={s.primary} disabled={busy} onClick={save}>
               <Icon name={busy ? "loader" : "shield"} />
               {busy ? "正在保存登录设置…" : "保存登录设置"}

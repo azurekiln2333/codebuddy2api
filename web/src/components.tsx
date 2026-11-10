@@ -16,6 +16,7 @@ export function Icon({ name = "grid", size = 16 }: { name?: string; size?: numbe
     account: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9a7 7 0 0 1 14 0",
     lock: "M6 10V7a6 6 0 0 1 12 0v3m-13 0h14v11H5V10Zm7 5v3",
     eye: "M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7Zm9.5 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+    copy: "M9 9h11v11H9zM5 15H4V4h11v1",
     eyeOff:
       "m3 3 18 18M10.6 5.4A10.8 10.8 0 0 1 12 5c6 0 9.5 7 9.5 7a18 18 0 0 1-3.1 3.7M6.1 6.1C3.9 7.6 2.5 12 2.5 12s3.5 7 9.5 7c1.4 0 2.7-.4 3.8-.9",
     logs: "M6 3h12v18H6z M9 7h6M9 11h6M9 15h4",
