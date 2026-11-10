@@ -19,7 +19,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from app import auth_settings
+from app import auth_settings, runtime_management
 from app.control_store import ControlStore
 from tests.sso_fixture import FakeIdp, build_sso_app, settings_store
 
@@ -221,6 +221,61 @@ class EnvironmentSeedTests(unittest.TestCase):
         }, allow_local=False)
         self.assertTrue(seed["enabled"])
         self.assertEqual(seed["allowedSubjects"], ["ops-1", "ops-2"])
+
+
+class WiringPersistenceTests(unittest.TestCase):
+    """A fresh console must persist the first change it accepts (design D2.4).
+
+    The store used to be built without the control database whenever nothing had
+    been saved yet, so an unconfigured deployment published every later change to
+    memory only and lost it on the next restart.
+    """
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.control = ControlStore(self.root / "control.sqlite3")
+        self.addCleanup(self.control.close)
+
+    def test_an_unconfigured_console_still_persists_its_first_change(self):
+        store = runtime_management.resolve_auth_settings(self.control, {})
+        self.assertIsNone(auth_settings.load(self.control))
+        store.update({"providerName": "Corp"})
+        self.assertIsNotNone(auth_settings.load(self.control),
+                             "the first saved change was not written to the database")
+        self.assertEqual(auth_settings.load(self.control)["providerName"], "Corp")
+
+    def test_a_seeded_console_persists_and_reloads_the_seed(self):
+        environ = {
+            "CODEBUDDY2API_SSO_ENABLED": "true",
+            "OIDC_ISSUER": "https://idp.example.com",
+            "OIDC_CLIENT_ID": "cid",
+            "OIDC_CLIENT_SECRET": "sec",
+            "CODEBUDDY2API_SSO_ALLOWED_SUBJECTS": "ops-1",
+        }
+        store = runtime_management.resolve_auth_settings(self.control, environ)
+        saved = auth_settings.load(self.control)
+        self.assertIsNotNone(saved, "the seed was not persisted")
+        self.assertTrue(saved["enabled"])
+        # A later boot reads it back instead of re-seeding from the environment.
+        again = runtime_management.resolve_auth_settings(self.control, {})
+        self.assertEqual(again.current()["issuer"], "https://idp.example.com")
+        self.assertEqual(again.current(), store.current())
+
+    def test_a_later_boot_keeps_console_edits_instead_of_reseeding(self):
+        store = runtime_management.resolve_auth_settings(self.control, {})
+        store.update({"providerName": "From console"})
+        later = runtime_management.resolve_auth_settings(
+            self.control, {"OIDC_ISSUER": "https://other.example.com"})
+        self.assertEqual(later.current()["providerName"], "From console")
+        self.assertEqual(later.current()["issuer"], "", "the environment overrode saved settings")
+
+    def test_broken_saved_settings_do_not_block_startup(self):
+        with self.control._lock:
+            self.control._db.execute(
+                "INSERT INTO gateway_secrets(name,value,announced) VALUES(?,?,1)",
+                (auth_settings.STORE_NAME, "{not json"))
+        store = runtime_management.resolve_auth_settings(self.control, {})
+        self.assertFalse(store.current()["enabled"])
 
 
 class RouteTests(unittest.TestCase):

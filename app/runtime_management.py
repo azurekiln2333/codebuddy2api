@@ -84,17 +84,19 @@ def resolve_auth_settings(control, environ) -> auth_settings.SettingsStore:
         saved = None
     overrides = environ.get("ALLOW_INSECURE_LOCALHOST", "")
     allow_local = str(overrides).strip().lower() in ("1", "true", "yes", "on")
-    store = auth_settings.SettingsStore(saved, control=control if saved is not None else None,
-                                       allow_local=allow_local)
+    # The control store is always attached: an unconfigured console still has to
+    # persist the first change it accepts. Omitting it here made every later
+    # PATCH update memory only, so the settings vanished on the next restart.
+    store = auth_settings.SettingsStore(saved, control=control, allow_local=allow_local)
     if saved is None:
         seed = auth_settings.seeded(environ, allow_local=allow_local)
         if seed:
-            store.replace(seed)
             try:
                 auth_settings.save(control, seed)
-                store = auth_settings.SettingsStore(seed, control=control, allow_local=allow_local)
+                store = auth_settings.SettingsStore(seed, control=control,
+                                                   allow_local=allow_local)
             except auth_settings.AuthSettingsError:
-                pass
+                store.replace(seed)
     return store
 
 
