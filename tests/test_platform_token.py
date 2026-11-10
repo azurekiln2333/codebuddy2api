@@ -5,6 +5,11 @@ These tests pin the contract of the env-gated service token: it authorises
 guards that stay in place when the token is absent or wrong.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct execution.
+
 import os
 import unittest
 from unittest.mock import Mock
