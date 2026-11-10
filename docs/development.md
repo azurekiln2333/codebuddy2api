@@ -10,21 +10,32 @@ migration references and are not needed to build or run this repository.
 
 ## Authentication boundaries
 
-Production Compose enables `CODEBUDDY2API_SSO_ENABLED=true`. Direct Python
-startup keeps the legacy API mode unless SSO is enabled. The replacement
-console requires SSO. See [deployment](deployment.md) for provider setup.
+Production Compose starts with key login enabled and SSO off; no OIDC value
+is required and an incomplete OIDC block is not a startup error. See
+[deployment](deployment.md) for provider setup and the admission rules.
 
-Native SSO owns `/sso/login`, `/sso/callback`, `/sso/session` and `/sso/logout`.
-It uses confidential OIDC with PKCE S256, one-use browser-bound state/nonce and
-RS256 verification. Browser cookies contain opaque IDs; tokens and client
-secrets remain in the backend. Each management request checks live UserInfo
-for a matching subject, `role=admin` and `isAdmin=true`. API-key headers cannot
-authorize management in SSO mode. `/v1/*` independently checks the inference
-key; a console cookie cannot authorize inference.
+`PANEL_ADMIN_KEY` is the panel key. It logs into the console, where it is
+exchanged for an HttpOnly session cookie, and it doubles as the
+`Authorization: Bearer` credential for `/admin/*`, which needs no cookie or
+CSRF token because the unified panel is a server-side proxy. The two uses are
+independent: turning browser key login off leaves the bearer path intact.
+`PLATFORM_TOKEN` and `PANEL_KEY` stay accepted as aliases.
+
+Native SSO owns `/sso/config`, `/sso/login`, `/sso/callback`, `/sso/session`
+and `/sso/logout`. It uses confidential OIDC with PKCE S256, one-use
+browser-bound state/nonce and RS256 verification. Browser cookies contain
+opaque IDs; tokens and client secrets remain in the backend. Each management
+request checks live UserInfo against the admission allow-list: a matching
+subject in `allowedSubjects`, or an `allowedEmails` entry the provider marks
+verified. Role and group claims are informational and no longer grant access,
+and an empty allow-list admits nobody. Console settings are the live source and
+apply to the next request; the environment only seeds a console that has never
+been saved. `/v1/*` independently checks the inference key; a console cookie
+cannot authorize inference.
 
 The console keeps identity and CSRF only in memory. Writes and credential
 enrollment polling carry `X-CSRF-Token`. The backend validates the public
-origin; the legacy CSRF switch cannot disable SSO checks. Full log clearing
+origin; the legacy CSRF switch cannot disable these checks. Full log clearing
 requires the exact confirmation `清空全部日志与统计`. Credential enrollment is
 a separate OAuth flow from console login.
 
@@ -104,7 +115,7 @@ uv run --locked --no-build python -B -m preview --port 8790 --data-dir /tmp/cb-p
 
 Use the API at `http://127.0.0.1:8790/v1` with the inference key `preview` (or the `--api-key` value). The preview also seeds standard keys demonstrating expiry, IP and model restrictions.
 
-The preview's sandbox disables external network access and starts the backend in SSO-disabled compatibility mode. It therefore does not provide an OIDC sign-in for this fork's console. Do not use its local `admin` / `preview` password on the replacement UI. Use the native SSO integration fixture described above to exercise the console, or point `AZUREKILN_GATEWAY_URL` at an SSO-configured local gateway when running `pnpm --dir web dev`.
+The preview's sandbox disables external network access and starts the backend with SSO off and no panel key, so it offers no console sign-in of its own. Use the native OIDC integration fixture described above to exercise the console, or point `AZUREKILN_GATEWAY_URL` at a local gateway that has a panel key or SSO configured when running `pnpm --dir web dev`.
 
 ### What is simulated
 

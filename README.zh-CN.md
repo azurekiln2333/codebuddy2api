@@ -1,16 +1,16 @@
 # codebuddy2api
 
-把 **WorkBuddy / CodeBuddy（腾讯代码助手）** 订阅变成本机可用的 **OpenAI / Anthropic 兼容 API**。本二开仓库统一提供原生 OAuth2/OIDC 登录、React 控制台和镜像发布。
+把 **WorkBuddy / CodeBuddy（腾讯代码助手）** 订阅变成本机可用的 **OpenAI / Anthropic 兼容 API**。本二开仓库统一提供支持 key 与原生 OAuth2/OIDC 登录的控制台，以及镜像发布。
 
 [English](README.md)
 
 - 支持 Chat Completions、Responses 和 Anthropic Messages，包含工具调用与流式输出。
 - 三种推理协议统一兼容工具 Schema 与上游渠道响应。
-- 内置 **WebUI**：组织单点登录，管理模型、凭证、日志与设置。
+- 内置 **WebUI**：key 或组织单点登录，管理模型、凭证、日志与设置。
 - 多账号自动选路，兼容国内／国际站，自动刷新凭证。
 - 按账号配置自动任务：国内个人账号默认签到后派 Buddy 旅行，可分别关闭；国际自动签到默认关闭。成长中心仅面向个人账号：已完成任务自动领取积分与能量，行为链按任务开关执行；企业账号不参与。
 
-开发时可运行无真实凭证的模拟上游接口；SSO 控制台使用原生 OIDC 测试夹具验证。见[开发与测试](docs/development.zh-CN.md)。
+开发时可运行无真实凭证的模拟上游接口；控制台使用原生 OIDC 测试夹具验证。见[开发与测试](docs/development.zh-CN.md)。
 
 ## 快速开始
 
@@ -22,17 +22,15 @@ cd codebuddy2api
 cp .env.example .env
 ```
 
-编辑 `.env`，填写自己的镜像和推理密钥。配置控制台的 OIDC 客户端。在身份提供方登记 `<PUBLIC_ORIGIN>/sso/callback`。升级时保留已有 `.env`。
+编辑 `.env`，填写自己的镜像、推理密钥，以及用于登录控制台的面板密钥。其余设置都在控制台里完成。升级时保留已有 `.env`。
 
 ```dotenv
 CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest
 CODEBUDDY2API_KEY=replace-with-a-random-inference-key
-CODEBUDDY2API_SSO_ENABLED=true
-PUBLIC_ORIGIN=https://api.example.com
-OIDC_ISSUER=https://sso.example.com
-OIDC_CLIENT_ID=codebuddy2api
-OIDC_CLIENT_SECRET=replace-with-your-client-secret
+PANEL_ADMIN_KEY=replace-with-a-random-panel-key
 ```
+
+用 `PANEL_ADMIN_KEY` 登录。SSO 为可选项：打开「设置 → 认证」，填写提供方与准入白名单，保存即生效、无需重启。统一部署中，面板调用管理接口时使用的就是这个同一个 `PANEL_ADMIN_KEY`。
 
 ```bash
 docker compose pull
@@ -43,7 +41,7 @@ Compose 默认拉取 `latest`（`CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codeb
 
 首次使用：
 
-1. 打开 **`<PUBLIC_ORIGIN>/dashboard/`**。通过组织身份提供方登录管理员账号。
+1. 打开 **`<PUBLIC_ORIGIN>/dashboard/`**。用 `PANEL_ADMIN_KEY` 登录；若已启用 SSO，也可通过组织身份提供方登录。
 2. 在「凭证管理」扫码添加国内或国际账号，也可导入 `.info` 文件，或按端点粘贴刷新令牌批量导入。
 3. 在「密钥管理」为每个客户端创建推理密钥，按需设置模型、IP、有效期和速率限制。
 4. 在「模型路由」查看可用模型，将其对外 ID 填入客户端。
@@ -70,7 +68,7 @@ docker compose --profile auto-update up -d --no-build
 
 - 媒体生成按上游积分计费，只路由到已实测验证的账号产品；见[媒体生成](docs/clients.zh-CN.md#媒体生成)。
 
-- **API Key**：使用「密钥管理」创建的密钥，或外部配置的管理密钥；WebUI 管理 Cookie 不能调用 `/v1/*`。 浏览器控制台独立使用 OIDC/SSO 会话登录。
+- **API Key**：使用「密钥管理」创建的密钥，或外部配置的管理密钥；WebUI 管理 Cookie 不能调用 `/v1/*`。 浏览器控制台独立使用 `PANEL_ADMIN_KEY` 或（启用后的）SSO 会话登录。
 - **模型**：使用 WebUI 中的对外 ID，或查询 `GET /v1/models`。
 - 国内、国际账号共用这些地址，无需额外的地域参数。Anthropic SDK 会自行追加 `/v1/messages`，不要把它写入 Base URL。
 - 搜索与抓取端点不调用模型。在请求里声明 Anthropic `web_search_*`／`web_fetch_*` 或 OpenAI `web_search` 服务端工具时，网关会自行执行，见[联网搜索与抓取](docs/clients.zh-CN.md#联网搜索与抓取)。
@@ -110,8 +108,8 @@ docker compose --profile auto-update up -d --no-build
 
 ## 常见问题
 
-- **经反代无法登录控制台？** 检查 `PUBLIC_ORIGIN`、身份提供方的 `/sso/callback` 地址、HTTPS 和管理员权限。见[部署指南](docs/deployment.zh-CN.md)。
-- **没有 Docker？** 构建 `web/`，安装锁定的 Python 依赖。使用相同 SSO 配置启动 `converter.py`。见[本地 Python 运行](docs/deployment.zh-CN.md#本地-python-运行)。
+- **经反代无法登录控制台？** 检查 `PUBLIC_ORIGIN`、身份提供方的 `/sso/callback` 地址与 HTTPS。若 SSO 拒绝你，确认你的 subject 或已验证邮箱在「设置 → 认证」的白名单里。见[部署指南](docs/deployment.zh-CN.md)。
+- **没有 Docker？** 构建 `web/`，安装锁定的 Python 依赖。使用相同 `PANEL_ADMIN_KEY` 启动 `converter.py`。见[本地 Python 运行](docs/deployment.zh-CN.md#本地-python-运行)。
 - **数据在哪里？** 全部位于 `auth/`（Docker 中为 `/data/auth`）：凭证、设置与日志数据库——见[数据与备份](docs/webui.zh-CN.md#数据与备份)。
 - **镜像标签怎么选？** `latest` 跟随稳定版，GitHub 的 `edge` 跟随 main，版本标签选择某一发行版——见[使用已发布镜像](docs/deployment.zh-CN.md#使用已发布镜像)。
 - **Responses 工具输出/参数被压缩或需要完全原样？** 设置 `responses_projection_mode`（默认 `balanced`，设 `passthrough` 可完全关闭投影）及 `responses_projection_max_bytes`（默认 `40000`，`0` 禁用单项裁剪）。balanced 裁剪保留头尾并显示原始 bytes、估算 tokens 与总行数，客户端地址不变——见 [Responses 投影](docs/clients.zh-CN.md#responses-投影)及[详细说明](docs/advanced.zh-CN.md#responses-投影)。

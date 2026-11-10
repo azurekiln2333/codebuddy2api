@@ -6,12 +6,13 @@
 
 ## 认证边界
 
-生产 Compose 默认启用 `CODEBUDDY2API_SSO_ENABLED=true`。直接运行 Python 时默认保留关闭 SSO 的后端兼容模式；自改控制台必须启用 SSO。身份提供方配置见[部署指南](deployment.zh-CN.md)。
+控制台默认以 key 登录启动、SSO 关闭；无需任何 OIDC 配置，OIDC 配置不完整也不再是启动错误。身份提供方配置与准入规则见[部署指南](deployment.zh-CN.md)。
 
-原生 SSO 提供 `/sso/login`、`/sso/callback`、`/sso/session` 和 `/sso/logout`。采用机密 OIDC 客户端、PKCE S256、与浏览器绑定的一次性 state/nonce 和 RS256 校验。浏览器 Cookie 只有不透明会话 ID，token 与客户端密钥留在后端。每次管理请求通过实时 UserInfo 校验匹配的 subject、`role=admin` 和 `isAdmin=true`。API key 不能授权 SSO 管理接口；`/v1/*` 独立校验推理密钥，控制台 Cookie 不能授权推理。
+`PANEL_ADMIN_KEY` 即面板密钥：既可登录控制台（换取 HttpOnly 会话 Cookie），也作为 `/admin/*` 的 `Authorization: Bearer` 凭据，后者无需 Cookie 与 CSRF 令牌，因为统一面板是服务端代理。两种用途相互独立：关闭浏览器 key 登录不影响 Bearer 通道。`PLATFORM_TOKEN` 与 `PANEL_KEY` 仍作为别名接受。
 
-控制台只在内存保留身份与 CSRF token。写操作和凭证授权轮询携带 `X-CSRF-Token`，后端校验公开来源；旧 CSRF 开关不能关闭 SSO 检查。清空全部日志必须输入完整的 `清空全部日志与统计`。凭证入库授权是独立于控制台登录的 OAuth 流程。
+原生 SSO 提供 `/sso/config`、`/sso/login`、`/sso/callback`、`/sso/session` 和 `/sso/logout`。采用机密 OIDC 客户端、PKCE S256、与浏览器绑定的一次性 state/nonce 和 RS256 校验。浏览器 Cookie 只有不透明会话 ID，token 与客户端密钥留在后端。每次管理请求通过实时 UserInfo 校验准入白名单：subject 命中 `allowedSubjects`，或邮箱命中 `allowedEmails` 且提供方标记该邮箱已验证。角色与分组声明仅作参考，不再授予访问权；白名单为空则无人被准入。控制台设置为唯一生效来源，保存后对下一次请求生效；环境变量只用于给从未保存过设置的控制台播种。`/v1/*` 独立校验推理密钥，控制台 Cookie 不能授权推理。
 
+控制台只在内存保留身份与 CSRF token。写操作和凭证授权轮询携带 `X-CSRF-Token`，后端校验公开来源；旧 CSRF 开关不能关闭这些检查。清空全部日志必须输入完整的 `清空全部日志与统计`。凭证入库授权是独立于控制台登录的 OAuth 流程。
 使用单个 Uvicorn worker。会话和待完成登录有数量上限，保存在内存中，重启即失效。凭证、配置与审计保存在完整的 `auth/` 目录；不同运行实例不得共享该目录。
 
 ## 本地检查
@@ -44,7 +45,7 @@ python scripts/package.py
 python scripts/package.py --verify dist/<archive>.tar.gz
 ```
 
-发布包附 SHA-256 sidecar 和供更新器读取的 `SHA256SUMS` 资产，排除本地凭据、环境文件、数据库与 agent 状态。同一 Dockerfile 可构建源码或解压的发布包。稳定版更新 `latest`，预发布版不修改稳定别名；镜像路径来自 fork 仓库上下文。PR 只校验，不登录或推送 registry。
+发布包附 SHA-256 sidecar 和供更新器读取的 `SHA256SUMS` 资产，排除本地凭据、环境文件、数据库与 agent 状态。同一 Dockerfile 可构建源码或解压的发布包。稳定版更新 `latest`，览发布版不修改稳定别名；镜像路径来自 fork 仓库上下文。PR 只校验，不登录或推送 registry。
 
 服务器使用 `docker compose pull` 和 `docker compose up -d --no-build`。可选 `auto-update` 只处理本部署启用更新的应用容器；本地构建覆盖文件关闭自动镜像更新。私有 registry 登录、备份与回退见[部署指南](deployment.zh-CN.md)。
 
@@ -59,14 +60,14 @@ uv run --locked --no-build python -B -m preview --port 8790 --data-dir /tmp/cb-p
 |------|--------|------|
 | `--host` / `--port` | `127.0.0.1` / `8790` | 监听地址 |
 | `--api-key` | `preview` | 外部管理推理密钥；也作为兼容模式的初始管理密码 |
-| `--data-dir` | 每次新建临时目录 | 跨重启保留预览数据；目录必须为空或由预览服务创建 |
+| `--data-dir` | 每次新建临时目录 | 跨重启保留览览数据；目录必须为空或由览览服务创建 |
 | `--public` | 关闭 | 拒绝不适合共享演示的操作，见[共享接口演示](#共享接口演示与隔离) |
 | `--reset-hours` | `0`（不重置） | 运行指定小时后退出，由进程管理器用全新数据重启 |
 | 其他参数 | — | 原样传给网关，例如 `--admin-allowed-origins` |
 
-API 地址为 `http://127.0.0.1:8790/v1`，推理密钥为 `preview`（或 `--api-key` 指定值）。预览还预置了展示有效期、IP 和模型限制的普通密钥。
+API 地址为 `http://127.0.0.1:8790/v1`，推理密钥为 `preview`（或 `--api-key` 指定值）。览览还览置了展示有效期、IP 和模型限制的普通密钥。
 
-预览沙箱禁止外部网络，后端使用关闭 SSO 的兼容模式，因此不会为本 fork 控制台提供 OIDC 登录。不要在新版 UI 使用本地 `admin` / `preview` 密码。验证控制台请使用上文原生 SSO 集成夹具；开发热更新则运行 `pnpm --dir web dev`，将 `AZUREKILN_GATEWAY_URL` 指向已配置 SSO 的本地网关。
+览览沙箱禁止外部网络，后端使用关闭 SSO 的兼容模式，因此不会为本 fork 控制台提供 OIDC 登录。不要在新版 UI 使用本地 `admin` / `preview` 密码。验证控制台请使用上文原生 SSO 集成夹具；开发热更新则运行 `pnpm --dir web dev`，将 `AZUREKILN_GATEWAY_URL` 指向已配置 SSO 的本地网关。
 
 ### 模拟范围
 
@@ -78,7 +79,7 @@ API 地址为 `http://127.0.0.1:8790/v1`，推理密钥为 `preview`（或 `--ap
 | 历史 | 一个月的请求记录，概览、日志和统计打开即有数据 |
 | 余额 | 不同到期时间的积分包；请求会消耗，签到、旅行、任务和体验积分会增加 |
 | 模型 | 按区域区分的模型目录，包含倍率、能力和上限 |
-| 媒体 | 预置图片和视频，支持模拟生成；公开模式的媒体与模型写操作受预览保护层限制 |
+| 媒体 | 览置图片和视频，支持模拟生成；公开模式的媒体与模型写操作受览览保护层限制 |
 | 推理 | Chat Completions、Responses 和 Anthropic Messages 都会流式返回引用你消息的模拟回复，支持推理的模型带推理内容 |
 | 自动化 | 签到、Buddy 旅行（一趟 3 分钟）、成长任务、体验积分和国际站活跃打卡 |
 | 登录 | 添加账号会在 4 秒后自动登录一个新的合成账号；界面上显示的官方登录链接无需打开 |
@@ -103,6 +104,6 @@ API 地址为 `http://127.0.0.1:8790/v1`，推理密钥为 `preview`（或 `--ap
 
 `--public` 限制管理写操作、凭证导入导出、日志清理、归档与更新。`--reset-hours` 让进程按时退出，由进程管理器用全新数据重启。这些选项作用于模拟 API 服务，不会新增 SSO 登录或可公开访问的浏览器演示。公开的 `preview` 密钥不可用于真实部署。
 
-- 预览服务从不读取仓库的 `.env` 或 `auth/`：它会清除环境中所有 `CODEBUDDY*` 变量，只在自己的数据目录中运行，并拒绝使用 `auth/`。
+- 览览服务从不读取仓库的 `.env` 或 `auth/`：它会清除环境中所有 `CODEBUDDY*` 变量，只在自己的数据目录中运行，并拒绝使用 `auth/`。
 - 所有 httpx 请求都由模拟上游应答；其他对外连接和域名解析一律拒绝，绕过 httpx 的活跃打卡通道也被替换。未模拟的接口返回 501，并在日志中记录一次 `[preview] 未模拟的上游接口`。
 - 一键更新已停用，工作区文件不会被替换。

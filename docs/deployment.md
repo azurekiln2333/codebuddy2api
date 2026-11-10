@@ -29,21 +29,53 @@ Compose loads `.env` into the container; shell variables still win for the image
 
 Mount the entire data directory on writable local storage, not just one SQLite file, and do not share it between instances. Stop the gateway and back up the whole directory before upgrading; see [data and backups](webui.md#data-and-backups).
 
-## Console login (OIDC)
+## Console login and admission
 
-Compose runs in console-login mode (`CODEBUDDY2API_SSO_ENABLED=true`). Fill in every value below before the first `docker compose up`; startup fails closed when they are missing, and there is no API-key fallback for console login while this mode is enabled.
+Nothing has to be configured before the first `docker compose up`. The console starts with key login enabled and SSO off, and an incomplete OIDC block is not a startup error.
+
+`PANEL_ADMIN_KEY` is the only credential a deployment must provide (12+ characters). It has two uses and they are independent:
+
+- **Console login.** The login page asks for the key. It is exchanged for an HttpOnly session cookie; mutations additionally require the CSRF token the session endpoint returns.
+- **Panel bearer.** A request to `/admin/*` carrying `Authorization: Bearer <PANEL_ADMIN_KEY>` is authorized without a cookie or CSRF token, because the unified panel is a server-side proxy and not a browser. Turning browser key login off does not revoke this path.
+
+`PLATFORM_TOKEN` and `PANEL_KEY` remain accepted as aliases, but `PANEL_ADMIN_KEY` wins when both are set. A value shorter than 12 characters is treated as unset rather than degrading into a weak credential. In a unified deployment every console receives the same value.
+
+### Configuring SSO in the console
+
+SSO is managed in the browser under Settings, not in the environment. A saved change applies to the next request: no restart, no container recreate. The settings document stores the provider name, issuer, client ID and secret (write-only; the API returns only `hasClientSecret`), scope, callback URL and the admission lists.
+
+| Field | Purpose |
+|-------|---------|
+| Provider name | Button label on the login page; defaults to `SSO`. |
+| Issuer | HTTPS discovery and JWKS endpoint. Discovery is validated before the change is saved. |
+| Client ID / Client secret | Confidential client credentials; the browser never receives the secret. Register the redirect URI `<PUBLIC_ORIGIN>/sso/callback` and grant `openid profile email`. |
+| Scope | Must include `openid`. |
+| Callback URL | Overrides the redirect base; empty derives it from `PUBLIC_ORIGIN` or the request. |
+| Allowed subjects / Allowed e-mails | The admission allow-list; see below. |
+
+Turning browser key login off requires an active SSO session saved under the same settings, so you cannot lock yourself out. Both methods can be enabled at once; at least one must remain.
+
+### Admission is an allow-list
+
+An SSO identity is admitted only when its subject appears in `allowedSubjects`, or its e-mail appears in `allowedEmails` **and** the provider marks that e-mail verified. Role and group claims no longer grant access — a claim is not an operator decision this service can audit. An empty allow-list admits nobody, so enabling SSO requires at least one entry.
+
+### Environment is a one-time seed
+
+`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `PUBLIC_ORIGIN`, `CODEBUDDY2API_SSO_ENABLED`, `CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` and `CODEBUDDY2API_SSO_ALLOWED_EMAILS` seed a console that has never been saved. Once settings exist in the data directory, the environment is ignored. A seed without an allow-list copies the provider values but leaves SSO off. Generate `PANEL_ADMIN_KEY` independently of every other secret; `CODEBUDDY2API_KEY` stays the inference credential and the console never uses it.
 
 | Setting | Purpose |
 |---------|---------|
-| `PUBLIC_ORIGIN` | Public HTTPS origin browsers use, no trailing slash. Also the Origin allowlist and the redirect base. |
-| `OIDC_ISSUER` | Issuer exposing HTTPS discovery and JWKS. |
-| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Confidential client credentials; the browser never receives the secret. |
+| `PANEL_ADMIN_KEY` | Console login key and `/admin/*` bearer. Required for a console deployment. |
+| `CODEBUDDY2API_SSO_ENABLED` | Seed only: `true` seeds SSO on (still needs an allow-list); default `false`. |
+| `PUBLIC_ORIGIN` | Public HTTPS origin browsers use, no trailing slash. Origin allowlist and redirect base. |
+| `OIDC_ISSUER` | Seed only: issuer exposing HTTPS discovery and JWKS. |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Seed only: confidential client credentials. |
+| `CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` / `CODEBUDDY2API_SSO_ALLOWED_EMAILS` | Seed only: comma-separated admission lists. |
 | `OIDC_REFRESH` | `true` requests `offline_access` and rotating refresh tokens. |
-| `ALLOW_INSECURE_LOCALHOST` | Loopback development escape hatch for plain-HTTP origins. Keep `false` in production. |
+| `ALLOW_INSECURE_LOCALHOST` | Loopback development escape hatch for plain-HTTP origins and issuers. Keep `false` in production. |
 | `SESSION_TTL_MS` / `SESSION_IDLE_MS` / `TRANSACTION_TTL_MS` / `MAX_SESSIONS` / `OAUTH_TIMEOUT_MS` | Optional tuning (empty keeps the default). Config fails closed when `SESSION_IDLE_MS` exceeds `SESSION_TTL_MS`. |
 
-Register the redirect URI `<PUBLIC_ORIGIN>/sso/callback` and grant `openid profile roles`. `roles` is required: administrator authorization reads live user info and needs both the admin role and its admin flag. `CODEBUDDY2API_KEY` stays the inference and automation credential, and the console never uses it. Set `CODEBUDDY2API_SSO_ENABLED=false` only for legacy local API operation without a console login.
-
+`CODEBUDDY2API_SSO_ENABLED=false` is no longer needed to run without a console: leave SSO off in Settings instead.
 ## Docker Compose
 
 ### Use published images

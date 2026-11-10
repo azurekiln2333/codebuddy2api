@@ -181,7 +181,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 | `PATCH /admin/credentials/{id}` | 按账号设置单个布尔字段（`enabled`、`auto_checkin`、`auto_travel`、`auto_daily_chat` 或 `auto_growth`）或 `growth_auto` 任务码映射；保存自动任务开关不立即领取 |
 | `GET /admin/credentials/{id}/growth-tasks` · `POST .../growth-tasks/auto` · `.../auto-all` · `GET /admin/growth-jobs` · `POST /admin/credentials/growth-batch` | 实时成长任务列表；以后台任务执行单任务或全部已开任务；各账号当前与最近任务；为已选账号批量设置任务开关 |
 | `POST /admin/oauth/start` · `GET /admin/oauth/poll` | 发起与轮询登录；`site=cn`（默认）、`intl`（国际 WorkBuddy）或 `intl-codebuddy`（国际 CodeBuddy） |
-| `POST` / `GET` / `DELETE /admin/session` · `DELETE /admin/sessions` | 仅 SSO 关闭的后端模式：密码登录、会话查看/退出及全部撤销；记住我会话用同一 SID 滑动续期 |
+| `POST` / `GET` / `DELETE /admin/session` · `DELETE /admin/sessions` | `POST` 带 `{"key": …}` 即面板密钥登录；不带 `key` 时透传给本地密码登录。`GET` 回显 CSRF token，`DELETE` 登出；`DELETE /admin/sessions` 撤销全部 |
 | `GET` / `PUT /admin/account` | 仅 SSO 关闭的后端模式：查看或修改本地管理用户名/密码；修改后更换会话 epoch 和 CSRF token |
 | `GET` / `POST /admin/keys` · `PATCH` / `DELETE /admin/keys/{id}` · `POST .../rotate` · `POST .../reveal` | 创建和管理推理密钥；写操作使用乐观版本，普通密钥可查看，管理密钥只显示一次 |
 | `GET /admin/credits` · `POST /admin/checkin` | 查询额度；按日幂等签到，国内按开关继续旅行 |
@@ -194,9 +194,9 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 页面使用 `/dashboard/*`，管理 API 使用 `/admin/*`，客户端保留原 `/v1/*`；不注册 `/cn`、`/intl` API 前缀。模型自动选路不要求客户端改变地址。
 
-生产 Compose 启用原生 OAuth2/OIDC 控制台登录。按[部署文档](deployment.zh-CN.md)配置 `PUBLIC_ORIGIN` 与 OIDC 客户端，并登记 `${PUBLIC_ORIGIN}/sso/callback` 回调。新版 WebUI 使用 HttpOnly SSO Cookie 访问 `/admin/*`，每次请求通过 UserInfo 检查当前管理员权限。API key 请求头和旧密码登录接口都不能绕过 SSO。推理客户端仍向 `/v1/*` 发送 `Authorization: Bearer <key>` 或 `X-Api-Key`；控制台 Cookie 不能授权推理。
+控制台默认以 key 登录启动、原生 OAuth2/OIDC 关闭；无需任何 OIDC 配置，配置不完整也不是启动错误。`PANEL_ADMIN_KEY` 既可登录控制台，也是 `/admin/*` 的 `Authorization: Bearer` 凭据（无需 Cookie 与 CSRF）。按[部署文档](deployment.zh-CN.md)在「设置 → 认证」里配置 SSO，并登记 `${PUBLIC_ORIGIN}/sso/callback` 回调。配置后 WebUI 使用 HttpOnly SSO Cookie 访问 `/admin/*`，每次请求通过实时 UserInfo 校验准入白名单——命中的 subject，或提供方标记已验证的命中邮箱。角色声明不再授予访问权。保存后无需重启即生效；环境变量只给从未保存过设置的控制台播种。推理客户端仍向 `/v1/*` 发送 `Authorization: Bearer <key>` 或 `X-Api-Key`；控制台 Cookie 不能授权推理。
 
-为兼容已有 API 集成，直接运行 Python 时 `CODEBUDDY2API_SSO_ENABLED` 默认 `false`。该模式使用独立的本地用户名／密码管理账号及 Cookie 会话接口，推理 API key 不能授权 `/admin/*`。新版 WebUI 必须启用 SSO，没有本地密码登录入口。外部 `CODEBUDDY2API_KEY` 可作为本地管理账号的初始密码；旧默认 key 会迁移为初始密码及数据库管理密钥。修改本地密码后，登录不再跟随外部密钥变化。`converter.py admin reset-password` 仅恢复本地管理账号，不会重置身份提供方账号。`/health` 不返回账号、路径或异常详情。
+直接运行 Python 同样不需要 SSO：控制台以 key 登录、SSO 关闭启动。SSO 关闭时，本地用户名／密码管理账号及其 Cookie 会话接口仍作为内层边界可用；推理 API key 不能授权 `/admin/*`，控制台优先使用 `PANEL_ADMIN_KEY`。外部 `CODEBUDDY2API_KEY` 可作为本地管理账号的初始密码；旧默认 key 会迁移为初始密码及数据库管理密钥。修改本地密码后，登录不再跟随外部密钥变化。`converter.py admin reset-password` 仅恢复本地管理账号，不会重置身份提供方账号。`/health` 不返回账号、路径或异常详情。
 
 **`OPEN_NOAUTH` 匿名模式会同时开放推理和账号池 billing（`/v1/dashboard/billing/*`）。** 仅在没有任何外部密钥和 `api_keys` 记录时生效，缺失或占位 token 都会放行，公网部署绝不可使用。只要存在任意密钥记录，包括停用或过期记录，匿名模式即失效。
 
@@ -204,7 +204,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 ### 管理 Origin / CSRF 开关
 
-SSO 模式下，写操作和凭证授权轮询始终要求会话 CSRF token。写操作要求与 `PUBLIC_ORIGIN` 一致的 `Origin`；浏览器同源 GET 轮询省略 `Origin` 时，可使用匹配的 `Referer`。跨站 Fetch Metadata 会被拒绝。`CODEBUDDY2API_ADMIN_CSRF=false` 和旧 `admin_allowed_origins` 配置都不能放宽这些检查。反代部署应正确设置公网 HTTPS 来源。下面的开关仅适用于关闭 SSO 的旧管理模式。
+无论 key 登录还是 SSO，控制台会话的写操作和凭证授权轮询始终要求会话 CSRF token；`Authorization: Bearer <PANEL_ADMIN_KEY>` 属于服务间凭据，因此既不带 Cookie 也不需要 CSRF token。写操作要求与 `PUBLIC_ORIGIN` 一致的 `Origin`；浏览器同源 GET 轮询省略 `Origin` 时，可使用匹配的 `Referer`。跨站 Fetch Metadata 会被拒绝。`CODEBUDDY2API_ADMIN_CSRF=false` 和旧 `admin_allowed_origins` 配置都不能放宽这些检查。反代部署应正确设置公网 HTTPS 来源。下面的开关仅适用于关闭 SSO 的旧管理模式。
 
 默认开启。OAuth 轮询在 `Origin`、`Sec-Fetch-Site` 均缺失时，兼容同源 `Referer`（协议、主机、端口一致），仍要求有效 CSRF token。已有 `Origin` 优先校验；无 `Origin` 但有 Fetch Metadata 时，只接受 `same-origin`，不会再用 Referer 回退。登录和写操作仍要求 Origin。
 
@@ -340,7 +340,7 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 
 | 现象 | 处理与边界 |
 |------|------------|
-| WebUI 无法登录 | 启用 SSO，检查 `PUBLIC_ORIGIN`、issuer/client 配置和登记的 `/sso/callback` 回调；身份服务的 UserInfo 必须返回匹配的 `sub`、`role=admin` 和 `isAdmin=true`。重启会清除会话，需重新登录。详见[部署文档](deployment.zh-CN.md) |
+| WebUI 无法登录 | 检查 `PANEL_ADMIN_KEY`（12 位以上，或可接受的别名）。SSO 场景检查「设置 → 认证」里的 issuer/client 配置与登记的 `/sso/callback` 回调；身份服务必须返回出现在白名单里的 `sub`，或已验证的命中邮箱。重启会清除会话，需重新登录。详见[部署文档](deployment.zh-CN.md) |
 | 本地 401 / 403 / 429 | 检查推理密钥是否存在、启用且未过期，再检查 IP/模型允许范围和 RPM；鉴权与权限错误按客户端协议返回 |
 | 上游 401 / 403 | 凭证级认证熔断；在 WebUI 检查并重新登录 |
 | 渠道校验（11128） | 仅国际线路在同账号 `/console` 回退一次；第二次渠道拒绝可把 system 指令降为 user 后在同账号重试一次。国内请求不回退，直接返回原始拒绝。最终仍拒绝则直接返回，不冷却任何账号；搜索/MCP 没有回退端点，账号保持可用 |

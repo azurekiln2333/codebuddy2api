@@ -1,16 +1,16 @@
 # codebuddy2api
 
-Use your **WorkBuddy / CodeBuddy (Tencent)** subscription as local **OpenAI- and Anthropic-compatible APIs**. This fork includes native OAuth2/OIDC console login, the replacement React console, and image delivery in one repository.
+Use your **WorkBuddy / CodeBuddy (Tencent)** subscription as local **OpenAI- and Anthropic-compatible APIs**. This fork includes a console with key and optional native OAuth2/OIDC login, and image delivery in one repository.
 
 [中文文档](README.zh-CN.md)
 
 - Chat Completions, Responses and Anthropic Messages, with tool calling and streaming.
 - Compatible tool-schema and channel handling across all three inference protocols.
-- Built-in **WebUI** with organization SSO, models, credentials, logs and settings — no separate UI or authentication-gateway deployment.
+- Built-in **WebUI** with key or organization SSO login, models, credentials, logs and settings — no separate UI or authentication-gateway deployment.
 - Automatic multi-account routing across domestic and international sites, with credential refresh.
 - Per-account automation: domestic personal accounts check in and dispatch Buddy travel by default, with independent switches; international check-in is opt-in. The growth center is personal-only: finished tasks are claimed automatically, with per-task switches for behavior chains; enterprise accounts are excluded.
 
-Development includes a simulated upstream without real credentials; the SSO console is tested with the native OIDC fixture. See [development and tests](docs/development.md).
+Development includes a simulated upstream without real credentials; the console is tested with a native OIDC fixture. See [development and tests](docs/development.md).
 
 ## Quick start
 
@@ -22,17 +22,15 @@ cd codebuddy2api
 cp .env.example .env
 ```
 
-Edit `.env`: choose your published image, set a random inference API key, and configure the console's OIDC client. Register `<PUBLIC_ORIGIN>/sso/callback` at your identity provider. Preserve an existing `.env` on upgrades:
+Edit `.env`: choose your published image, set a random inference API key, and set the panel key that logs into the console. Everything else is configured in the console itself. Preserve an existing `.env` on upgrades:
 
 ```dotenv
 CODEBUDDY2API_IMAGE=ghcr.io/azurekiln2333/codebuddy2api:latest
 CODEBUDDY2API_KEY=replace-with-a-random-inference-key
-CODEBUDDY2API_SSO_ENABLED=true
-PUBLIC_ORIGIN=https://api.example.com
-OIDC_ISSUER=https://sso.example.com
-OIDC_CLIENT_ID=codebuddy2api
-OIDC_CLIENT_SECRET=replace-with-your-client-secret
+PANEL_ADMIN_KEY=replace-with-a-random-panel-key
 ```
+
+Sign in with `PANEL_ADMIN_KEY`. SSO is optional: open **Settings → Authentication**, fill in the provider and the admission allow-list, and the change applies without a restart. In a unified deployment the same `PANEL_ADMIN_KEY` is what the panel uses as its management bearer.
 
 ```bash
 docker compose pull
@@ -70,7 +68,7 @@ It selects this application's labeled containers. Follow `latest` for stable upd
 
 - Media generation is billed per upstream credit and only routes to verified account products; see [Media generation](docs/clients.md#media-generation).
 
-- **API key:** use a key created in **Keys**, or the externally configured admin key. The WebUI management Cookie cannot call `/v1/*`. The browser console signs in independently through its OIDC/SSO session.
+- **API key:** use a key created in **Keys**, or the externally configured admin key. The WebUI management Cookie cannot call `/v1/*`. The browser console signs in independently with `PANEL_ADMIN_KEY` or, when enabled, SSO.
 - **Model:** a public ID from the WebUI or `GET /v1/models`.
 - All accounts share these URLs; no region parameter is needed. Anthropic SDKs append `/v1/messages` themselves, so leave it out of the Base URL.
 - The search and fetch endpoints never call a model. Declaring Anthropic `web_search_*` / `web_fetch_*` or OpenAI `web_search` server tools makes the gateway execute them itself. See [Web search and fetch](docs/clients.md#web-search-and-fetch).
@@ -110,8 +108,8 @@ It selects this application's labeled containers. Follow `latest` for stable upd
 
 ## FAQ
 
-- **Console sign-in fails behind a reverse proxy?** Check `PUBLIC_ORIGIN`, the identity provider's exact `/sso/callback` redirect URI, HTTPS and administrator authorization. See the [deployment guide](docs/deployment.md).
-- **No Docker?** Build `web/`, install the locked Python dependencies and run `converter.py` with the same SSO configuration. See [Local Python setup](docs/deployment.md#local-python-setup).
+- **Console sign-in fails behind a reverse proxy?** Check `PUBLIC_ORIGIN`, the identity provider's exact `/sso/callback` redirect URI and HTTPS. If SSO refuses you, confirm your subject or verified e-mail is in the allow-list under **Settings → Authentication**. See the [deployment guide](docs/deployment.md).
+- **No Docker?** Build `web/`, install the locked Python dependencies and run `converter.py` with the same `PANEL_ADMIN_KEY`. See [Local Python setup](docs/deployment.md#local-python-setup).
 - **Where is my data?** Everything lives in `auth/` (or `/data/auth` in Docker): credentials, settings and log databases — see [Data and backups](docs/webui.md#data-and-backups).
 - **Which image tag should I use?** `latest` follows stable releases, GitHub's `edge` follows main, and version tags select a release — see [Published images](docs/deployment.md#use-published-images).
 - **Responses tool output/arguments compressed or need verbatim passthrough?** Set `responses_projection_mode` (default `balanced`, or `passthrough` to disable projection) and `responses_projection_max_bytes` (default `40000`, `0` disables per-item trimming). Balanced trimming keeps the head/tail and reports original bytes, estimated tokens and total lines; client addresses stay unchanged — see [Responses projection](docs/clients.md#responses-projection) and [details](docs/advanced.md#responses-projection).

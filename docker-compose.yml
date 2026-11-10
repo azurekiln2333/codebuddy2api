@@ -4,7 +4,7 @@
 # the optional updater uses profiles, so Compose v1 / `docker-compose` is not supported.
 #
 # Quick start:
-#   cp .env.example .env        # set the fork image, the OIDC client and the data directory
+#   cp .env.example .env        # set PANEL_ADMIN_KEY (and the fork image if needed)
 #   docker compose pull
 #   docker compose up -d --no-build
 #
@@ -33,16 +33,22 @@ services:
       - path: ${CODEBUDDY2API_ENV_FILE:-.env}
         required: false
     environment:
-      # Console login is the Compose default. Startup fails closed when the OIDC
-      # settings below are incomplete; there is no API-key fallback in SSO mode.
-      # Set CODEBUDDY2API_SSO_ENABLED=false only for legacy local API operation.
-      CODEBUDDY2API_SSO_ENABLED: ${CODEBUDDY2API_SSO_ENABLED:-true}
+      # The panel key logs into the console and authorizes the unified panel on
+      # /admin/*. It is the only credential a deployment has to provide.
+      PANEL_ADMIN_KEY: ${PANEL_ADMIN_KEY:-}
+      # Optional one-time SSO seed for a console that has never been saved. SSO is
+      # configured in the browser afterwards; an empty block is NOT a startup error,
+      # and SSO stays off until an allow-list is saved.
+      CODEBUDDY2API_SSO_ENABLED: ${CODEBUDDY2API_SSO_ENABLED:-false}
       # Public HTTPS origin browsers use (OIDC redirect base and Origin allowlist).
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
       # Confidential OIDC client. The browser never receives these values.
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      # Admission allow-list; SSO cannot be enabled without at least one entry.
+      CODEBUDDY2API_SSO_ALLOWED_SUBJECTS: ${CODEBUDDY2API_SSO_ALLOWED_SUBJECTS:-}
+      CODEBUDDY2API_SSO_ALLOWED_EMAILS: ${CODEBUDDY2API_SSO_ALLOWED_EMAILS:-}
       OIDC_REFRESH: ${OIDC_REFRESH:-false}
       # Loopback-only development escape hatch for plain-HTTP origins. Never true in production.
       ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}

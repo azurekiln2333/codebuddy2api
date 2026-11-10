@@ -30,21 +30,53 @@ Compose 会把 `.env` 加载进容器；镜像、宿主机映射与数据路径�
 
 数据目录需整体挂载在可写本地存储，不要只挂载单个 SQLite 文件，也不要在多个实例间共享。升级前停止网关并备份整个目录，见[数据与备份](webui.zh-CN.md#数据与备份)。
 
-## 控制台登录（OIDC）
+## 控制台登录与准入
 
-Compose 默认以控制台登录模式运行（`CODEBUDDY2API_SSO_ENABLED=true`）。首次 `docker compose up` 前必须填写下列全部值；缺失时启动直接失败，且该模式下管理登录不存在 API key 回退。
+首次 `docker compose up` 之前无需配置任何 SSO 值。控制台默认以 key 登录启动、SSO 关闭；OIDC 配置不完整不再是启动错误。
+
+`PANEL_ADMIN_KEY` 是部署唯一必须提供的凭据（12 位以上），有两种用途且相互独立：
+
+- **控制台登录**：登录页填写该 key，换取 HttpOnly 会话 Cookie；写操作还需会话接口返回的 CSRF 令牌。
+- **面板 Bearer**：携带 `Authorization: Bearer <PANEL_ADMIN_KEY>` 的 `/admin/*` 请求无需 Cookie 与 CSRF 令牌，因为统一面板是服务端代理而非浏览器。关闭浏览器 key 登录不会撤销此通道。
+
+`PLATFORM_TOKEN` 与 `PANEL_KEY` 仍作为别名接受，但两者同时存在时 `PANEL_ADMIN_KEY` 优先。长度不足 12 位的值按未设置处理，而不是降级成弱凭据。统一部署中所有控制台使用同一个值。
+
+### 在控制台配置 SSO
+
+SSO 在浏览器「设置」里管理，不在环境变量里。保存后立即对下一次请求生效：无需重启、无需重建容器。设置文档保存提供方名称、签发方、客户端 ID 与 secret（只写；接口只返回 `hasClientSecret`）、scope、回调地址与准入名单。
+
+| 字段 | 作用 |
+|------|------|
+| 提供方名称 | 登录页按钮文字，默认 `SSO` |
+| 签发方 | HTTPS discovery 与 JWKS 地址；保存前会校验 discovery |
+| 客户端 ID / 客户端 secret | 机密客户端凭证；浏览器不会拿到 secret。需登记回调地址 `<PUBLIC_ORIGIN>/sso/callback` 并授予 `openid profile email` |
+| Scope | 必须包含 `openid` |
+| 回调地址 | 覆盖跳转基址；留空则由 `PUBLIC_ORIGIN` 或当前请求推导 |
+| 允许的 subject / 允许的邮箱 | 准入白名单，见下节 |
+
+关闭浏览器 key 登录需要一条在同一配置下建立的活跃 SSO 会话，因此不会把自己锁在外面。两种方式可同时开启，但至少要保留一种。
+
+### 准入改为白名单
+
+只有 subject 出现在 `allowedSubjects`，或邮箱出现在 `allowedEmails` **且**提供方标记该邮箱已验证时，SSO 身份才被准入。角色与分组声明不再授予访问权——声明不是本服务能审计的运维决定。白名单为空则无人被准入，因此启用 SSO 至少需要一条记录。
+
+### 环境变量只是一次性种子
+
+`OIDC_ISSUER`、`OIDC_CLIENT_ID`、`OIDC_CLIENT_SECRET`、`PUBLIC_ORIGIN`、`CODEBUDDY2API_SSO_ENABLED`、`CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` 与 `CODEBUDDY2API_SSO_ALLOWED_EMAILS` 只用于给从未保存过设置的控制台播种。数据目录里一旦有设置，环境变量即被忽略。没有白名单的种子只会带入提供方参数，SSO 仍保持关闭。请独立于其他密钥生成 `PANEL_ADMIN_KEY`；`CODEBUDDY2API_KEY` 仍是推理凭证，控制台不会使用它。
 
 | 配置 | 作用 |
 |------|------|
-| `PUBLIC_ORIGIN` | 浏览器访问的公网 HTTPS 源，末尾不带斜杠；同时用于 Origin 白名单与跳转基址 |
-| `OIDC_ISSUER` | 提供 HTTPS discovery 与 JWKS 的签发方 |
-| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | 机密客户端凭证；浏览器不会拿到 secret |
+| `PANEL_ADMIN_KEY` | 控制台登录 key 与 `/admin/*` Bearer；带控制台的部署必须设置 |
+| `CODEBUDDY2API_SSO_ENABLED` | 仅播种：`true` 播种为开启（仍需白名单），默认 `false` |
+| `PUBLIC_ORIGIN` | 浏览器访问的公网 HTTPS 源，末尾不带斜杠；Origin 白名单与跳转基址 |
+| `OIDC_ISSUER` | 仅播种：提供 HTTPS discovery 与 JWKS 的签发方 |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | 仅播种：机密客户端凭证 |
+| `CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` / `CODEBUDDY2API_SSO_ALLOWED_EMAILS` | 仅播种：逗号分隔的准入名单 |
 | `OIDC_REFRESH` | 设为 `true` 时申请 `offline_access` 并启用轮换刷新令牌 |
-| `ALLOW_INSECURE_LOCALHOST` | 仅回环开发用的明文 HTTP 逃生门；生产必须保持 `false` |
+| `ALLOW_INSECURE_LOCALHOST` | 仅回环开发用的明文 HTTP 逃生门（含签发方）；生产必须保持 `false` |
 | `SESSION_TTL_MS` / `SESSION_IDLE_MS` / `TRANSACTION_TTL_MS` / `MAX_SESSIONS` / `OAUTH_TIMEOUT_MS` | 可选会话调优（留空则用默认值）；`SESSION_IDLE_MS` 大于 `SESSION_TTL_MS` 时启动失败 |
 
-在身份提供方注册回调地址 `<PUBLIC_ORIGIN>/sso/callback`，并授予 `openid profile roles`。`roles` 必需：管理员授权读取实时用户信息，需要同时具备管理员角色与该角色的管理员标记。`CODEBUDDY2API_KEY` 仍是推理与自动化凭证，控制台不会使用它。仅在无控制台登录的旧式本地 API 运行时才设 `CODEBUDDY2API_SSO_ENABLED=false`。
-
+不再需要为「不带控制台运行」设置 `CODEBUDDY2API_SSO_ENABLED=false`，在「设置」里保持 SSO 关闭即可。
 ## Docker Compose
 
 ### 使用已发布镜像

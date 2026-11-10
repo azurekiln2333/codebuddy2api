@@ -4,9 +4,9 @@
 
 ## Open the console
 
-Start the application using the [deployment guide](deployment.md), then open `<PUBLIC_ORIGIN>/dashboard/` and use the organization sign-in action. The identity provider must authorize your account as an administrator. The image includes the console; a source installation builds `web/` first.
+Start the application using the [deployment guide](deployment.md), then open `<PUBLIC_ORIGIN>/dashboard/` and sign in with the panel key, or with the organization sign-in action once SSO is configured. The identity provider account must appear in the admission allow-list. The image includes the console; a source installation builds `web/` first.
 
-Console login uses OAuth2/OIDC and an HttpOnly session cookie. The browser never asks for the inference API key. On startup, the connecting screen checks the session before showing protected data. Expired sessions return to sign-in; denied administrator access is shown separately and request failures can be retried. Application restarts require signing in again because SSO sessions are held in memory. Account enrollment through Credentials is a separate OAuth flow.
+Console login accepts either `PANEL_ADMIN_KEY` or OAuth2/OIDC, and both end in the same HttpOnly session cookie. The browser never asks for the inference API key. On startup, the connecting screen checks the session before showing protected data. Expired sessions return to sign-in; denied administrator access is shown separately and request failures can be retried. Application restarts require signing in again because sessions are held in memory. The panel key and the SSO settings live in the data directory and survive restarts. Account enrollment through Credentials is a separate OAuth flow.
 
 ## Overview
 
@@ -46,7 +46,7 @@ Add independent mappings with public/upstream IDs and local enablement. Choose e
 
 ## API keys
 
-The **Keys** page separates inference credentials from the management account. In this console, key operations use the current authorized SSO session and CSRF token; they do not ask for a local management password. An external admin key shows only its configuration origin and never a prefix or secret. One database admin key is allowed; it is unrestricted and visible only at creation or rotation, with only its hash stored.
+The **Keys** page separates inference credentials from the management account. In this console, key operations use the current authorized console session and CSRF token; they do not ask for a local management password. An external admin key shows only its configuration origin and never a prefix or secret. One database admin key is allowed; it is unrestricted and visible only at creation or rotation, with only its hash stored.
 
 Standard keys support names, enable/disable, expiry, IP/CIDR allowlists, RPM and model restrictions, rotation, reveal, copy and deletion. They remain visible in the UI and are stored in plaintext in `control.sqlite3` and configuration backups, so protect both. Keys authorize only `/v1/*`; standard keys cannot read account-pool billing or access another key's video tasks.
 
@@ -56,7 +56,7 @@ The table shows each key's approximate last-24-hour request count from hourly au
 
 Filter requests by key and inspect failed attempts. The key column shows the current name when available, `<id> (deleted)` after deletion, and `— (pre-upgrade)` for old records. Closing details or switching log type cancels pending detail loads. Clearing details keeps historical statistics.
 
-Clearing **all logs and statistics** is irreversible. Enter the exact confirmation text shown in the dialog. The server checks the authorized SSO session and CSRF token; the browser does not send an administrative API key. This does not delete credentials or gateway settings.
+Clearing **all logs and statistics** is irreversible. Enter the exact confirmation text shown in the dialog. The server checks the authorized console session and CSRF token; the browser does not send an administrative API key. This does not delete credentials or gateway settings.
 
 ## Media
 
@@ -73,7 +73,7 @@ Edit unlocked options; hot changes apply immediately, while restart-marked setti
 
 - "Keep tool descriptions" is off by default and works across all three protocols, independently of prompt compaction; see [tool metadata retention](advanced.md#tool-metadata-retention).
 - "Model capability preflight" defaults to on. Disabling it affects new requests only, not metadata display, international image-run merging or existing security limits; see [model declarations](advanced.md#model-declarations-and-image-compatibility).
-- Configure SSO's public origin and OIDC client in the deployment environment. `admin_allowed_origins` belongs to the legacy management mode; it does not change the identity provider's callback registration or SSO origin checks.
+- Configure SSO in **Settings → Authentication**: provider, issuer, client credentials, scope, callback URL and the admission allow-list. A saved change applies to the next request without a restart. `PUBLIC_ORIGIN` stays the deployment-level origin used for cookies and Origin checks, and `admin_allowed_origins` belongs to the legacy management mode; neither changes the identity provider's callback registration.
 
 ## Updates
 
