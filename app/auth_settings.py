@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import re
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -341,6 +342,11 @@ class SettingsStore:
         self._control = control
         self.allow_local = allow_local
         self._values = with_defaults(values if values is not None else DEFAULT_SSO)
+        # ``update`` is read-modify-write: validate against the current document,
+        # persist, then publish. FastAPI runs sync handlers in a threadpool, so two
+        # concurrent PATCHes could otherwise persist one document and publish the
+        # other, leaving memory and disk disagreeing until the next restart.
+        self._lock = threading.Lock()
 
     def current(self) -> dict[str, Any]:
         return with_defaults(self._values)
@@ -350,15 +356,17 @@ class SettingsStore:
 
     def update(self, patch: Mapping[str, Any]) -> dict[str, Any]:
         """Validate, persist, then publish; a failed write leaves the old value."""
-        candidate = validate(patch, self._values, allow_local=self.allow_local)
-        if self._control is not None:
-            save(self._control, candidate)
-        self._values = candidate
-        return with_defaults(candidate)
+        with self._lock:
+            candidate = validate(patch, self._values, allow_local=self.allow_local)
+            if self._control is not None:
+                save(self._control, candidate)
+            self._values = candidate
+            return with_defaults(candidate)
 
     def replace(self, values: Mapping[str, Any]) -> None:
         """Install an already-validated document (used by the env seed)."""
-        self._values = with_defaults(values)
+        with self._lock:
+            self._values = with_defaults(values)
 
 
 def seed_from_env(environ: Mapping[str, str]) -> dict[str, Any]:

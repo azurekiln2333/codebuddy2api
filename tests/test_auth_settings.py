@@ -11,7 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct exe
 
 import json
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -148,6 +152,47 @@ class PersistenceTests(unittest.TestCase):
                 (auth_settings.STORE_NAME, "{not json"))
         with self.assertRaises(auth_settings.AuthSettingsError):
             auth_settings.load(self.control)
+
+    def test_concurrent_updates_are_serialized_and_persist_what_they_publish(self):
+        """Two PATCHes must not interleave read-modify-write.
+
+        Without the lock both threads read the same previous document and then
+        persist and publish in whatever order they happen to finish, so memory
+        and disk can disagree. Detecting overlap inside the critical section is
+        deterministic, unlike racing SQLite writes.
+        """
+        store = auth_settings.SettingsStore(control=self.control)
+        store.update(full(providerName="start"))
+        active = {"now": 0, "peak": 0}
+        guard = threading.Lock()
+        real_save = auth_settings.save
+
+        def slow_save(control, values):
+            with guard:
+                active["now"] += 1
+                active["peak"] = max(active["peak"], active["now"])
+            try:
+                time.sleep(0.05)
+                real_save(control, values)
+            finally:
+                with guard:
+                    active["now"] -= 1
+
+        with mock.patch.object(auth_settings, "save", slow_save):
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(lambda i: store.update({"providerName": f"name-{i}"}),
+                              range(4)))
+
+        self.assertEqual(active["peak"], 1, "updates entered the critical section together")
+        self.assertEqual(auth_settings.load(self.control), store.current())
+
+    def test_a_failed_update_leaves_the_previous_settings_in_place(self):
+        store = auth_settings.SettingsStore(control=self.control)
+        store.update(full(providerName="keep-me"))
+        with self.assertRaises(auth_settings.AuthSettingsError):
+            store.update({"allowedEmails": ["not-an-email"]})
+        self.assertEqual(store.current()["providerName"], "keep-me")
+        self.assertEqual(auth_settings.load(self.control)["providerName"], "keep-me")
 
 
 class EnvironmentSeedTests(unittest.TestCase):
