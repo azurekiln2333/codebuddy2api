@@ -34,7 +34,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from .sso_config import SSOConfig
 from .sso_oidc import OidcClient, OidcError, create_code_verifier, random_token
-from . import auth_settings, platform_token
+from . import auth_settings, panel_key, platform_token
 
 SESSION_COOKIE = "cb_sso_session"
 TRANSACTION_COOKIE = "cb_sso_txn"
@@ -626,6 +626,12 @@ class SSOAdminMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not str(scope.get("path", "")).startswith("/admin/"):
             return await self.app(scope, receive, send)
+        # The outer panel-key boundary already settled this request: it answered
+        # /admin/session itself and authorized everything else by key session or
+        # bearer. SSO must not demand a session on top, and must not reject the
+        # key login with 405. Both methods are independent (design D2.2/D2.7).
+        if isinstance(scope.get("state"), dict) and scope["state"].get(panel_key.AUTHORIZED):
+            return await self.app(scope, receive, _no_store_send(send))
         request = Request(scope, receive)
         path = scope["path"]
         method = scope.get("method", "GET")

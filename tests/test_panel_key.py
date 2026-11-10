@@ -4,13 +4,14 @@ One value, ``PANEL_ADMIN_KEY``, has two independent uses and the tests below pin
 both of them, plus the rule that disabling the browser login must not revoke the
 service-to-service path.
 """
+import asyncio
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct execution.
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -19,6 +20,7 @@ from starlette.responses import JSONResponse
 from app import auth_settings, panel_key
 from app.admin_auth import AdminMiddleware
 from app.panel_auth import install_panel_key
+from app.sso_auth import SSOAdminMiddleware, SSOAuthError
 
 KEY = "panel-admin-key-0123456789"
 ORIGIN = {"Origin": "http://localhost"}
@@ -92,6 +94,113 @@ def build_bounded_application(*, key=KEY, sso_enabled=False):
                                config=config)
     install_panel_key(application, {**config, "panel_key": key})
     return application, config
+
+
+def build_sso_bounded_application(*, key=KEY):
+    """SSO boundary inside, panel key outside, console SSO switched on."""
+    application = FastAPI()
+
+    @application.get("/admin/thing")
+    async def read_thing():
+        return {"ok": True}
+
+    store = auth_settings.SettingsStore()
+    store.update({"enabled": True, "issuer": "https://idp.example.com",
+                  "clientId": "cid", "clientSecret": "sec",
+                  "allowedSubjects": ["ops"]})
+    sso = Mock()
+
+    async def refuse(request):
+        # Mimics the real service, which raises rather than returning a response.
+        raise SSOAuthError(401, "unauthenticated")
+
+    sso.authorize = AsyncMock(side_effect=refuse)
+    config = {"auth_settings": store, "sso": sso}
+    install_panel_key(application, {**config, "panel_key": key})
+    return application, config, sso
+
+
+class SsoEnabledTests(unittest.TestCase):
+    """With console SSO on, both key paths must still work (design D2.2/D2.7)."""
+
+    def setUp(self):
+        self.app, _, self.sso = build_sso_bounded_application()
+        self.client = self.enterContext(TestClient(self.app, base_url="http://localhost"))
+
+    def test_key_login_is_not_rejected_in_sso_mode(self):
+        response = self.client.post("/admin/session", headers=ORIGIN, json={"key": KEY})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["csrf_token"])
+
+    def test_a_key_session_reaches_the_route_in_sso_mode(self):
+        self.client.post("/admin/session", headers=ORIGIN, json={"key": KEY})
+        read = self.client.get("/admin/thing")
+        self.assertEqual(read.status_code, 200, read.text)
+
+    def test_the_bearer_still_works_in_sso_mode(self):
+        read = self.client.get("/admin/thing", headers={"Authorization": f"Bearer {KEY}"})
+        self.assertEqual(read.status_code, 200, read.text)
+
+
+class SsoBoundaryDefersTests(unittest.TestCase):
+    """The SSO boundary must stand down once the panel key authorized a request.
+
+    Driving the middleware directly keeps the assertion unambiguous: the real
+    stack places it inside the panel-key layer, which a TestClient with
+    add_middleware does not reproduce faithfully.
+    """
+
+    def build(self, *, marked, path="/admin/session"):
+        seen = []
+
+        async def endpoint(scope, receive, send):
+            seen.append("endpoint")
+            await JSONResponse({"ok": True})(scope, receive, send)
+
+        sso = Mock()
+
+        async def authorize(request):
+            seen.append("sso")
+            raise SSOAuthError(401, "unauthenticated")
+
+        sso.authorize = authorize
+        middleware = SSOAdminMiddleware(endpoint, sso=sso, dispatch=None, token="",
+                                        config={"auth_settings": auth_settings.SettingsStore()})
+        state = {panel_key.AUTHORIZED: True} if marked else {}
+        return middleware, {
+            "type": "http", "method": "POST", "path": path,
+            "headers": [(b"origin", b"http://localhost")],
+            "state": state,
+        }, seen
+
+    def test_an_authorized_request_never_reaches_the_sso_boundary(self):
+        middleware, scope, seen = self.build(marked=True)
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}"}
+
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        asyncio.run(middleware(scope, receive, send))
+        self.assertEqual(seen, ["endpoint"], "the SSO boundary intercepted the key login")
+
+    def test_an_unauthenticated_request_is_still_refused_by_sso(self):
+        middleware, scope, seen = self.build(marked=False, path="/admin/keys")
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}"}
+
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        asyncio.run(middleware(scope, receive, send))
+        self.assertIn("sso", seen)
+        self.assertEqual(sent[0]["status"], 401)
 
 
 class InnerBoundaryTests(unittest.TestCase):
