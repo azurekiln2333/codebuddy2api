@@ -61,7 +61,7 @@ test("SSO sessions never show local bootstrap-password settings", async ({ page 
 test("SSO login renders in light, dark and a single-column mobile layout", async ({ page }) => {
   await mockAuth(page);
   // SSO-only layout: the key form is covered by its own case below.
-  page.unroute("**/sso/config");
+  await page.unroute("**/sso/config");
   await page.route("**/sso/config", (route) =>
     route.fulfill({
       json: {

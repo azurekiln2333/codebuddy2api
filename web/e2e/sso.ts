@@ -26,7 +26,7 @@ export async function mockAuthConfig(
 ) {
   const body = {
     keyLoginEnabled: config.keyLoginEnabled ?? defaultAuthConfig.keyLoginEnabled,
-    sso: { ...defaultAuthConfig.sso, ...(config.sso ?? {}) },
+    sso: { ...defaultAuthConfig.sso, ...config.sso },
   };
   await page.route("**/sso/config", (route: Route) => route.fulfill({ json: body }));
   return body;
