@@ -25,15 +25,17 @@ from . import panel_key
 from . import platform_token
 
 
-def _no_cache_send(send):
+def _no_cache_send(send, renewal=None):
     """Strip caching from a management response and forbid client storage."""
     async def wrapped(message):
         if message["type"] == "http.response.start":
             headers = [(k, v) for k, v in message.get("headers", [])
                        if k.lower() not in (b"cache-control", b"pragma", b"expires")]
-            message = {**message, "headers": headers + [
-                (b"cache-control", b"no-store"), (b"pragma", b"no-cache"),
-                (b"expires", b"0")]}
+            headers = headers + [(b"cache-control", b"no-store"),
+                                 (b"pragma", b"no-cache"), (b"expires", b"0")]
+            if renewal is not None:
+                headers.append((b"set-cookie", renewal.encode("latin-1")))
+            message = {**message, "headers": headers}
         await send(message)
     return wrapped
 
@@ -597,14 +599,11 @@ class AdminMiddleware:
         request = Request(scope, receive)
 
         renewal = None
+        # Delegates to the single implementation so the renewal cookie and the
+        # no-store headers can never diverge between the two boundaries.
 
         async def no_cache(message):
-            if message["type"] == "http.response.start":
-                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() not in (b"cache-control", b"pragma", b"expires")]
-                message = {**message, "headers": headers + [(b"cache-control", b"no-store"), (b"pragma", b"no-cache"), (b"expires", b"0")]}
-                if renewal is not None:
-                    message["headers"].append((b"set-cookie", renewal.encode("latin-1")))
-            await send(message)
+            await _no_cache_send(send, renewal)(message)
 
         try:
             enabled = self.auth.enabled() and self.auth.account_mode()
