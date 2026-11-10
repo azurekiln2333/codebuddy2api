@@ -62,7 +62,7 @@ SSO 在浏览器「设置」里管理，不在环境变量里。保存后立即�
 
 ### 环境变量只是一次性种子
 
-`OIDC_ISSUER`、`OIDC_CLIENT_ID`、`OIDC_CLIENT_SECRET`、`PUBLIC_ORIGIN`、`CODEBUDDY2API_SSO_ENABLED`、`CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` 与 `CODEBUDDY2API_SSO_ALLOWED_EMAILS` 只用于给从未保存过设置的控制台播种。数据目录里一旦有设置，环境变量即被忽略。没有白名单的种子只会带入提供方参数，SSO 仍保持关闭。请独立于其他密钥生成 `PANEL_ADMIN_KEY`；`CODEBUDDY2API_KEY` 仍是推理凭证，控制台不会使用它。
+`OIDC_ISSUER`、`OIDC_CLIENT_ID`、`OIDC_CLIENT_SECRET`、`CODEBUDDY2API_SSO_ENABLED`、`CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` 与 `CODEBUDDY2API_SSO_ALLOWED_EMAILS` 只用于给从未保存过设置的控制台播种。数据目录里一旦有设置，这些变量即被忽略。`PUBLIC_ORIGIN` 不是种子，每次启动都会读取：控制台换域名只需改这个值，除非控制台里另填了回调地址。没有白名单的种子只会带入提供方参数，SSO 仍保持关闭。请独立于其他密钥生成 `PANEL_ADMIN_KEY`；`CODEBUDDY2API_KEY` 仍是推理凭证，控制台不会使用它。
 
 | 配置 | 作用 |
 |------|------|

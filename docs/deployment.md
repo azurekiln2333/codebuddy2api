@@ -61,7 +61,7 @@ An SSO identity is admitted only when its subject appears in `allowedSubjects`, 
 
 ### Environment is a one-time seed
 
-`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `PUBLIC_ORIGIN`, `CODEBUDDY2API_SSO_ENABLED`, `CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` and `CODEBUDDY2API_SSO_ALLOWED_EMAILS` seed a console that has never been saved. Once settings exist in the data directory, the environment is ignored. A seed without an allow-list copies the provider values but leaves SSO off. Generate `PANEL_ADMIN_KEY` independently of every other secret; `CODEBUDDY2API_KEY` stays the inference credential and the console never uses it.
+`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `CODEBUDDY2API_SSO_ENABLED`, `CODEBUDDY2API_SSO_ALLOWED_SUBJECTS` and `CODEBUDDY2API_SSO_ALLOWED_EMAILS` seed a console that has never been saved. Once settings exist in the data directory, these are ignored. `PUBLIC_ORIGIN` is not a seed: it is read on every start, so moving the console to another domain only needs the new value, unless the console sets its own callback URL. A seed without an allow-list copies the provider values but leaves SSO off. Generate `PANEL_ADMIN_KEY` independently of every other secret; `CODEBUDDY2API_KEY` stays the inference credential and the console never uses it.
 
 | Setting | Purpose |
 |---------|---------|

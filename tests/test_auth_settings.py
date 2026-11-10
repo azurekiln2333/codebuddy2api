@@ -220,7 +220,22 @@ class EnvironmentSeedTests(unittest.TestCase):
         }, allow_local=False)
         self.assertFalse(seed["enabled"])
         self.assertEqual(seed["issuer"], "https://idp.example.com")
-        self.assertEqual(seed["callbackUrl"], "https://cb.example.com/sso/callback")
+        # The public origin stays a live deployment setting, never a seeded value.
+        self.assertEqual(seed["callbackUrl"], "")
+
+    def test_the_public_origin_follows_the_deployment_unless_the_console_sets_one(self):
+        from app.sso_config import from_settings
+
+        environ = {"PUBLIC_ORIGIN": "https://cb.example.com/"}
+        derived = from_settings(full(callbackUrl=""), environ=environ)
+        self.assertEqual(derived.public_origin, "https://cb.example.com")
+        self.assertEqual(derived.redirect_uri, "https://cb.example.com/sso/callback")
+        moved = from_settings(full(callbackUrl=""), environ={"PUBLIC_ORIGIN": "https://new.example.com"})
+        self.assertEqual(moved.public_origin, "https://new.example.com")
+        console = from_settings(full(callbackUrl="https://console.example.com/sso/callback"),
+                                environ=environ)
+        self.assertEqual(console.public_origin, "https://console.example.com")
+        self.assertEqual(from_settings(full(callbackUrl=""), environ={}).public_origin, "")
 
     def test_a_seed_with_an_allow_list_can_enable_sso(self):
         seed = auth_settings.seeded({

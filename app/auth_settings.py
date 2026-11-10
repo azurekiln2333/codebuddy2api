@@ -396,10 +396,11 @@ def seed_from_env(environ: Mapping[str, str]) -> dict[str, Any]:
     issuer = (environ.get("OIDC_ISSUER") or "").strip()
     client_id = (environ.get("OIDC_CLIENT_ID") or "").strip()
     client_secret = environ.get("OIDC_CLIENT_SECRET") or ""
-    public_origin = (environ.get("PUBLIC_ORIGIN") or "").strip()
     subjects = _split_list(environ.get("CODEBUDDY2API_SSO_ALLOWED_SUBJECTS"))
     emails = _split_list(environ.get("CODEBUDDY2API_SSO_ALLOWED_EMAILS"))
-    if not any((enabled, issuer, client_id, client_secret, public_origin, subjects, emails)):
+    # PUBLIC_ORIGIN is not seeded: it stays a live deployment setting (see
+    # sso_config.deployment_origin), so changing the domain needs no console edit.
+    if not any((enabled, issuer, client_id, client_secret, subjects, emails)):
         return {}
     seed: dict[str, Any] = {
         "enabled": enabled,
@@ -408,7 +409,6 @@ def seed_from_env(environ: Mapping[str, str]) -> dict[str, Any]:
         "clientSecret": client_secret,
         "allowedSubjects": subjects,
         "allowedEmails": emails,
-        "callbackUrl": f"{public_origin.rstrip('/')}/sso/callback" if public_origin else "",
     }
     if flag("OIDC_REFRESH"):
         seed["scope"] = DEFAULT_SCOPE + " offline_access"

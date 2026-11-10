@@ -172,17 +172,29 @@ def load(environ: Mapping[str, str] | None = None) -> SSOConfig:
         raise SSOConfigError("SESSION_IDLE_MS 不得大于 SESSION_TTL_MS")
     return config
 
+def deployment_origin(environ: Mapping[str, str] | None = None) -> str:
+    """The deployment's public origin from ``PUBLIC_ORIGIN``; empty when unset.
+
+    A console served on its own domain sets it once in the deployment, so it is
+    read live rather than copied into the console settings.
+    """
+    environ = os.environ if environ is None else environ
+    return (environ.get(ENV_PUBLIC_ORIGIN) or "").strip().rstrip("/")
+
+
 def from_settings(settings: Mapping[str, Any], *, allow_local: bool = False,
                   environ: Mapping[str, str] | None = None) -> SSOConfig:
     """Project a console settings document onto the immutable OIDC config.
 
-    ``public_origin`` may be empty: the service then derives the redirect URI
-    from the request, which is what design D2.3 asks for.
+    The origin comes from the console's callback URL, then ``PUBLIC_ORIGIN``.
+    It may be empty: the service then derives the redirect URI from the request,
+    which is what design D2.3 asks for.
     """
     environ = os.environ if environ is None else environ
     origin = str(settings.get("callbackUrl") or "")
     if origin.endswith("/sso/callback"):
         origin = origin[: -len("/sso/callback")]
+    origin = origin or deployment_origin(environ)
     return SSOConfig(
         enabled=settings.get("enabled") is True,
         public_origin=origin,

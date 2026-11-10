@@ -431,9 +431,12 @@ def install_admin(app, config, gateway, sso=None, platform_token=""):
     from . import auth_settings as _auth_settings
 
     def _callback_url(request):
+        from .sso_config import deployment_origin
+
         settings = config.get("auth_settings")
         values = settings.current() if settings is not None else {}
-        return values.get("callbackUrl") or f"{str(request.base_url).rstrip('/')}/sso/callback"
+        origin = deployment_origin() or str(request.base_url).rstrip("/")
+        return values.get("callbackUrl") or f"{origin}/sso/callback"
 
     @route("GET", "/admin/auth/config")
     async def auth_config_get(request):
