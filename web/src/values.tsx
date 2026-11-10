@@ -304,6 +304,7 @@ const eventActions: Record<string, MessageKey> = {
   key_revealed: "logs.action.key_revealed",
   key_deleted: "logs.action.key_deleted",
   sessions_revoked: "logs.action.sessions_revoked",
+  auth_settings_changed: "logs.action.auth_settings_changed",
   "credentials.uploaded": "logs.action.credentials_uploaded",
   "credentials.exported": "logs.action.credentials_exported",
   storage_archive: "logs.action.storage_archive",
