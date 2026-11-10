@@ -42,6 +42,11 @@ MAX_SESSIONS = 100
 LOGIN_WINDOW_SECONDS = 600
 MAX_LOGIN_FAILURES = 10
 IDENTITY = "panel:key"
+# Server-side marker: the outer panel-key boundary has already authorized this
+# request, so the inner management boundary must not re-check its own
+# credentials. It lives in the ASGI scope, never in a header or cookie, so a
+# client cannot forge it.
+AUTHORIZED = "panel_key_authorized"
 KEY_LOGIN_FIELD = "key"
 
 

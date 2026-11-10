@@ -118,6 +118,7 @@ class PanelKeyMiddleware:
                 scope.setdefault("state", {}).update(
                     admin_identity="sso:" + sso_session.sub, admin_cookie=True,
                     admin_session={"csrf_token": sso_session.csrf_token})
+                scope["state"][panel_key.AUTHORIZED] = True
                 return await self.app(scope, receive, send)
 
         return await self.app(scope, receive, send)
@@ -164,6 +165,7 @@ class PanelKeyMiddleware:
                 200, {"authenticated": False})(scope, receive, send)
         scope.setdefault("state", {}).update(
             admin_identity=panel_key.IDENTITY, admin_cookie=False, admin_session=None)
+        scope["state"][panel_key.AUTHORIZED] = True
         return await self.app(scope, receive, send)
 
     # ------------------------------------------------------------------ login
@@ -252,6 +254,7 @@ class PanelKeyMiddleware:
                     403, {"error": {"message": "Origin 或 CSRF 校验失败"}})(scope, receive, send)
         scope.setdefault("state", {}).update(
             admin_identity=panel_key.IDENTITY, admin_cookie=True, admin_session=session)
+        scope["state"][panel_key.AUTHORIZED] = True
         return await self.app(scope, receive, send)
 
     def _csrf_ok(self, request: Request, session: Mapping[str, Any]) -> bool:

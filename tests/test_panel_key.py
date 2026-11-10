@@ -62,6 +62,86 @@ def build_legacy_application(*, key=KEY, token=""):
     return application, config
 
 
+def build_bounded_application(*, key=KEY, sso_enabled=False):
+    """A live-shaped app: panel key outside, the real password boundary inside.
+
+    The inner boundary is fully working (not the 503 fallback), it simply has no
+    knowledge of panel-key sessions. Its account is enabled and carries no
+    session of its own, which is exactly the deployment shape: one console, key
+    login in front, the legacy password surface unchanged underneath.
+    """
+    application = FastAPI()
+
+    @application.get("/admin/thing")
+    async def read_thing():
+        return {"ok": True}
+
+    auth = Mock()
+    auth.enabled.return_value = True
+    auth.account_mode.return_value = True
+    auth.header_identity.return_value = ""
+    auth.session.return_value = (None, None)
+    auth.csrf_enabled.return_value = True
+    auth.allowed_origins.return_value = ()
+    store = auth_settings.SettingsStore()
+    config = {"auth_settings": store}
+    if sso_enabled:
+        store.update({"enabled": True, "issuer": "https://idp.example.com",
+                      "clientId": "c", "clientSecret": "s", "allowedSubjects": ["a"]})
+    application.add_middleware(AdminMiddleware, auth=auth, dispatch=None, token="",
+                               config=config)
+    install_panel_key(application, {**config, "panel_key": key})
+    return application, config
+
+
+class InnerBoundaryTests(unittest.TestCase):
+    """The panel key must satisfy the inner boundary, not just the outer one."""
+
+    def setUp(self):
+        self.app, self.config = build_bounded_application()
+        self.client = self.enterContext(TestClient(self.app, base_url="http://localhost"))
+
+    def test_a_key_session_reaches_the_route_through_the_real_boundary(self):
+        response = self.client.post("/admin/session", headers=ORIGIN, json={"key": KEY})
+        self.assertEqual(response.status_code, 200, response.text)
+        # The inner boundary knows nothing about this session; before the marker
+        # it answered 401 here even though the outer layer had authorized it.
+        read = self.client.get("/admin/thing")
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertEqual(read.json(), {"ok": True})
+
+    def test_the_bearer_reaches_the_route_through_the_real_boundary(self):
+        read = self.client.get("/admin/thing", headers={"Authorization": f"Bearer {KEY}"})
+        self.assertEqual(read.status_code, 200, read.text)
+
+    def test_an_unauthenticated_request_is_still_refused(self):
+        self.assertEqual(self.client.get("/admin/thing").status_code, 401)
+
+    def test_a_stale_session_cookie_is_refused(self):
+        self.client.cookies.set(COOKIE, "not-a-real-session")
+        self.assertEqual(self.client.get("/admin/thing").status_code, 401)
+
+    def test_a_forged_header_cannot_claim_authorization(self):
+        # The marker lives in the ASGI scope; an HTTP header must not stand in for it.
+        response = self.client.get("/admin/thing", headers={
+            "X-Panel-Key-Authorized": "1",
+            "Authorization": "Bearer " + "z" * 24})
+        self.assertEqual(response.status_code, 401)
+
+    def test_the_route_is_never_cacheable(self):
+        self.client.post("/admin/session", headers=ORIGIN, json={"key": KEY})
+        read = self.client.get("/admin/thing")
+        self.assertEqual(read.headers.get("cache-control"), "no-store")
+
+    def test_a_key_session_outlives_the_inner_password_boundary_being_sso_gated(self):
+        app, _ = build_bounded_application(sso_enabled=True)
+        with TestClient(app, base_url="http://localhost") as client:
+            login = client.post("/admin/session", headers=ORIGIN, json={"key": KEY})
+            self.assertEqual(login.status_code, 200, login.text)
+            read = client.get("/admin/thing")
+            self.assertEqual(read.status_code, 200, read.text)
+
+
 class KeyResolutionTests(unittest.TestCase):
     def test_the_new_name_wins_and_legacy_names_still_work(self):
         self.assertEqual(panel_key.key_from_env({"PANEL_ADMIN_KEY": KEY}), (KEY, "PANEL_ADMIN_KEY"))

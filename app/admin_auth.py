@@ -21,7 +21,21 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import admin_account
+from . import panel_key
 from . import platform_token
+
+
+def _no_cache_send(send):
+    """Strip caching from a management response and forbid client storage."""
+    async def wrapped(message):
+        if message["type"] == "http.response.start":
+            headers = [(k, v) for k, v in message.get("headers", [])
+                       if k.lower() not in (b"cache-control", b"pragma", b"expires")]
+            message = {**message, "headers": headers + [
+                (b"cache-control", b"no-store"), (b"pragma", b"no-cache"),
+                (b"expires", b"0")]}
+        await send(message)
+    return wrapped
 
 COOKIE_NAME = "cb_admin_session"
 SESSION_TTL = 12 * 3600
@@ -563,6 +577,13 @@ class AdminMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope["path"].startswith("/admin/"):
             return await self.app(scope, receive, send)
+        # The outer panel-key boundary already authorized this request (key login
+        # session, session cookie or a live SSO session it applied itself). Its
+        # own credential checks must not run again: they would answer 401 for a
+        # session this boundary knows nothing about. The marker is set in the ASGI
+        # scope, so no HTTP client can forge it.
+        if isinstance(scope.get("state"), dict) and scope["state"].get(panel_key.AUTHORIZED):
+            return await self.app(scope, receive, _no_cache_send(send))
         if await platform_token.authorize(
                 scope, receive, send, token=self.token, dispatch=self.dispatch, app=self.app):
             return
