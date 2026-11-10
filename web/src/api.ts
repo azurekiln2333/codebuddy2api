@@ -78,7 +78,13 @@ function invalidateSession(error: unknown, generation: number) {
   if (generation !== sessionGeneration || !axios.isAxiosError(error)) return;
   if (error.response?.status === 401) {
     sessionGeneration++;
-    useSession.setState({ status: "anonymous", csrf: null, user: null, provider: null, error: null });
+    useSession.setState({
+      status: "anonymous",
+      csrf: null,
+      user: null,
+      provider: null,
+      error: null,
+    });
   }
   if (error.response?.status === 403) {
     sessionGeneration++;
@@ -217,11 +223,7 @@ function readSession(provider: SessionProvider, value: unknown): SessionOutcome 
       throw new Error("未登录会话响应不符合接口契约");
     return { kind: "anonymous" };
   }
-  if (
-    data.authenticated !== true ||
-    typeof data.csrf_token !== "string" ||
-    !data.csrf_token.trim()
-  )
+  if (data.authenticated !== true || typeof data.csrf_token !== "string" || !data.csrf_token.trim())
     throw new Error("会话响应缺少认证状态或有效的 CSRF token");
   const user = object(data.user, "管理员身份");
   if (
@@ -390,12 +392,17 @@ export async function endSession() {
   try {
     // Each method revokes its own session; the CSRF token is the one the
     // session reported, and both routes demand it.
-    if (provider === "key")
-      await api.delete("/session", { headers: { "X-CSRF-Token": csrf } });
+    if (provider === "key") await api.delete("/session", { headers: { "X-CSRF-Token": csrf } });
     else await sso.post("/logout", null, { headers: { "X-CSRF-Token": csrf } });
     if (generation !== sessionGeneration) return;
     sessionGeneration++;
-    useSession.setState({ status: "anonymous", csrf: null, user: null, provider: null, error: null });
+    useSession.setState({
+      status: "anonymous",
+      csrf: null,
+      user: null,
+      provider: null,
+      error: null,
+    });
   } catch (error) {
     invalidateSession(error, generation);
     throw error;
@@ -477,7 +484,9 @@ export async function readAuthSettings(): Promise<AuthSettings> {
   return authSettingsResponse((await api.get<unknown>("/auth/settings")).data);
 }
 export async function saveAuthSettings(patch: AuthSettingsPatch): Promise<AuthSettings> {
-  return authSettingsResponse((await api.patch<unknown>("/auth/settings", authSettingsBody(patch))).data);
+  return authSettingsResponse(
+    (await api.patch<unknown>("/auth/settings", authSettingsBody(patch))).data,
+  );
 }
 // Session-level response cache for heavy pages (model routing): reopening the
 // page renders the last snapshot instantly while a fresh fetch replaces it.

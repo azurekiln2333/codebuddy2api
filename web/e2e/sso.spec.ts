@@ -220,8 +220,7 @@ test("a key session signs in through /admin/session and out with CSRF", async ({
           user: { sub: "panel:key", name: "面板密钥", provider: "key" },
         },
       });
-    if (method === "DELETE")
-      return route.fulfill({ json: { authenticated: false } });
+    if (method === "DELETE") return route.fulfill({ json: { authenticated: false } });
     return route.fulfill({ status: 401, json: { authenticated: false, csrf_token: null } });
   });
   await page.route("**/sso/session", (route) =>

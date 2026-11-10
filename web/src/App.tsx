@@ -385,7 +385,7 @@ function Login() {
   // redirect so the operator knows whether to retry or ask for access.
   const authError = new URLSearchParams(location.search).get("auth_error");
   const authErrorText = authError
-    ? authErrorLabels[authError] ?? `单点登录失败（${authError}），请重试。`
+    ? (authErrorLabels[authError] ?? `单点登录失败（${authError}），请重试。`)
     : null;
   const ssoLabel =
     config.sso.providerName && config.sso.providerName !== "SSO"

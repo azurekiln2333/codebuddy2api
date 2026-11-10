@@ -154,9 +154,7 @@ export function AuthSettingsPanel() {
                   disabled={busy}
                   onChange={(e) => update("ssoEnabled", e.target.checked)}
                 />
-                <label htmlFor={`${id}-sso-enabled`}>
-                  {draft.ssoEnabled ? "启用" : "停用"}
-                </label>
+                <label htmlFor={`${id}-sso-enabled`}>{draft.ssoEnabled ? "启用" : "停用"}</label>
               </span>
             </div>
           </div>
@@ -198,9 +196,7 @@ export function AuthSettingsPanel() {
           <div className={m.settingRow}>
             <div className={`${s.settingDescription} ${m.settingDescription}`}>
               <strong>Client Secret</strong>
-              <small>
-                {settings?.hasClientSecret ? "已设置，留空保持不变。" : "尚未设置。"}
-              </small>
+              <small>{settings?.hasClientSecret ? "已设置，留空保持不变。" : "尚未设置。"}</small>
             </div>
             <div className={`${s.settingControl} ${m.settingControl}`}>
               <label className={s.field}>
@@ -210,7 +206,9 @@ export function AuthSettingsPanel() {
                   value={draft.clientSecret}
                   disabled={busy}
                   autoComplete="new-password"
-                  placeholder={settings?.hasClientSecret ? "已设置，留空保持不变" : "输入客户端密钥"}
+                  placeholder={
+                    settings?.hasClientSecret ? "已设置，留空保持不变" : "输入客户端密钥"
+                  }
                   onChange={(e) => update("clientSecret", e.target.value)}
                 />
               </label>
@@ -296,9 +294,7 @@ export function AuthSettingsPanel() {
           <div className={m.settingRow}>
             <div className={`${s.settingDescription} ${m.settingDescription}`}>
               <strong>关闭面板密钥登录</strong>
-              <small>
-                仅保留单点登录。关闭前必须先用 SSO 登录验证，否则网关会拒绝。
-              </small>
+              <small>仅保留单点登录。关闭前必须先用 SSO 登录验证，否则网关会拒绝。</small>
             </div>
             <div className={`${s.settingControl} ${m.settingControl}`}>
               <span className={s.check}>
@@ -319,12 +315,7 @@ export function AuthSettingsPanel() {
             <div aria-live="polite">
               <strong>{saved ? t("settings.saved") : t("settings.saveHint")}</strong>
             </div>
-            <button
-              type="button"
-              className={s.primary}
-              disabled={busy}
-              onClick={save}
-            >
+            <button type="button" className={s.primary} disabled={busy} onClick={save}>
               <Icon name={busy ? "loader" : "shield"} />
               {busy ? "正在保存登录设置…" : "保存登录设置"}
             </button>

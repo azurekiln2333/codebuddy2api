@@ -59,7 +59,10 @@ describe("console auth settings", () => {
       if (config.method === "patch") {
         writes.push(config);
         return Promise.resolve(
-          response({ ...gatewaySettings, ssoEnabled: true, issuer: "https://sso.example.com" }, config),
+          response(
+            { ...gatewaySettings, ssoEnabled: true, issuer: "https://sso.example.com" },
+            config,
+          ),
         );
       }
       return Promise.resolve(response(gatewaySettings, config));
@@ -113,7 +116,11 @@ describe("console auth settings", () => {
     api.defaults.adapter = (config) =>
       config.method === "patch"
         ? Promise.reject(
-            failure(403, { error: { message: "请先通过 SSO 登录验证，再关闭面板密钥登录" } }, config),
+            failure(
+              403,
+              { error: { message: "请先通过 SSO 登录验证，再关闭面板密钥登录" } },
+              config,
+            ),
           )
         : Promise.resolve(response(gatewaySettings, config));
     render(<AuthSettingsPanel />);
