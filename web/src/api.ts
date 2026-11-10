@@ -3,22 +3,70 @@ import { create } from "zustand";
 import { useCallback, useEffect, useState } from "react";
 
 export type RecordValue = Record<string, unknown>;
-export type AdminUser = { sub: string; username?: string; name?: string; role: "admin" };
+export type SessionProvider = "key" | "sso";
+export type AdminUser = {
+  sub: string;
+  username?: string;
+  name?: string;
+  /** Absent on panel-key sessions: the key holder is the administrator. */
+  role?: "admin";
+  provider?: string;
+};
 export type Session = { authenticated: true; csrf_token: string; user: AdminUser };
+export type AuthConfig = {
+  keyLoginEnabled: boolean;
+  sso: { enabled: boolean; providerName: string; loginUrl: string };
+};
 type AuthState = {
   status: "checking" | "authenticated" | "anonymous" | "forbidden" | "error";
   csrf: string | null;
   user: AdminUser | null;
+  /** Which login issued the session; decides the logout route. */
+  provider: SessionProvider | null;
   error: string | null;
 };
 export const useSession = create<AuthState>(() => ({
   status: "checking",
   csrf: null,
   user: null,
+  provider: null,
   error: null,
 }));
+// The public login-page contract. The fallback keeps the SSO button when the
+// gateway cannot answer, so an older deployment can still be signed into.
+export const DEFAULT_AUTH_CONFIG: AuthConfig = {
+  keyLoginEnabled: true,
+  sso: { enabled: true, providerName: "SSO", loginUrl: "/sso/login" },
+};
+export const useAuthConfig = create<AuthConfig>(() => DEFAULT_AUTH_CONFIG);
+export async function loadAuthConfig(): Promise<AuthConfig> {
+  try {
+    const data = object((await sso.get<unknown>("/config")).data, "登录配置");
+    const ssoConfig = object(data.sso, "单点登录配置");
+    const config: AuthConfig = {
+      keyLoginEnabled: data.keyLoginEnabled === true,
+      sso: {
+        enabled: ssoConfig.enabled === true,
+        providerName:
+          typeof ssoConfig.providerName === "string" && ssoConfig.providerName.trim()
+            ? ssoConfig.providerName.trim()
+            : "SSO",
+        loginUrl: typeof ssoConfig.loginUrl === "string" ? ssoConfig.loginUrl : "",
+      },
+    };
+    useAuthConfig.setState(config);
+    return config;
+  } catch {
+    // A gateway without the route (or an unreachable one) keeps the default.
+    useAuthConfig.setState(DEFAULT_AUTH_CONFIG);
+    return DEFAULT_AUTH_CONFIG;
+  }
+}
 export const api = axios.create({ baseURL: "/admin", withCredentials: true, timeout: 20000 });
 export const sso = axios.create({ baseURL: "/sso", withCredentials: true, timeout: 20000 });
+// The panel-key login is the one /admin write that runs without a session, so it
+// uses a bare client: no CSRF injection and no session invalidation on 401.
+export const loginApi = axios.create({ baseURL: "/admin", withCredentials: true, timeout: 20000 });
 export const SSO_LOGIN_URL = "/sso/login?return_to=/dashboard/";
 // A session check may finish after a newer check, revocation or logout. Only
 // requests from the current generation may change the active session.
@@ -30,11 +78,17 @@ function invalidateSession(error: unknown, generation: number) {
   if (generation !== sessionGeneration || !axios.isAxiosError(error)) return;
   if (error.response?.status === 401) {
     sessionGeneration++;
-    useSession.setState({ status: "anonymous", csrf: null, user: null, error: null });
+    useSession.setState({ status: "anonymous", csrf: null, user: null, provider: null, error: null });
   }
   if (error.response?.status === 403) {
     sessionGeneration++;
-    useSession.setState({ status: "forbidden", csrf: null, user: null, error: forbiddenMessage });
+    useSession.setState({
+      status: "forbidden",
+      csrf: null,
+      user: null,
+      provider: null,
+      error: forbiddenMessage,
+    });
   }
 }
 api.interceptors.request.use((config) => {
@@ -149,46 +203,118 @@ export function errorMessage(error: unknown): string {
   }
   return error instanceof Error ? error.message : "操作失败，请重试。";
 }
+type SessionOutcome =
+  | { kind: "anonymous" }
+  | { kind: "forbidden" }
+  | { kind: "authenticated"; provider: SessionProvider; csrf: string; user: AdminUser };
+
+// Both login methods answer the same session shape, so one reader covers them.
+// Only the SSO side carries a role claim; holding the panel key is the grant.
+function readSession(provider: SessionProvider, value: unknown): SessionOutcome {
+  const data = object(value, "会话");
+  if (data.authenticated === false) {
+    if (data.csrf_token !== null || data.user !== null)
+      throw new Error("未登录会话响应不符合接口契约");
+    return { kind: "anonymous" };
+  }
+  if (
+    data.authenticated !== true ||
+    typeof data.csrf_token !== "string" ||
+    !data.csrf_token.trim()
+  )
+    throw new Error("会话响应缺少认证状态或有效的 CSRF token");
+  const user = object(data.user, "管理员身份");
+  if (
+    typeof user.sub !== "string" ||
+    !user.sub.trim() ||
+    (user.username !== undefined && typeof user.username !== "string") ||
+    (user.name !== undefined && typeof user.name !== "string")
+  )
+    throw new Error("会话响应缺少有效的管理员身份");
+  if (provider === "sso" && user.role !== "admin") return { kind: "forbidden" };
+  return {
+    kind: "authenticated",
+    provider,
+    csrf: data.csrf_token,
+    user: {
+      sub: user.sub,
+      ...(provider === "sso" ? { role: "admin" as const } : {}),
+      ...(typeof user.username === "string" ? { username: user.username } : {}),
+      ...(typeof user.name === "string" ? { name: user.name } : {}),
+      ...(typeof user.provider === "string" ? { provider: user.provider } : {}),
+    },
+  };
+}
+
+// The OIDC session keeps its own route; a 401 only means "no SSO session", and
+// 403 stays the denied answer that the guard explains.
+async function probeSsoSession(): Promise<SessionOutcome | null> {
+  try {
+    return readSession("sso", (await sso.get<unknown>("/session")).data);
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      if (error.response?.status === 403) return { kind: "forbidden" };
+      // 401 (no cookie), 404 (route missing) and 5xx (store unavailable) all
+      // mean this method has no session; the key probe decides next.
+      if (error.response) return null;
+      throw error;
+    }
+    throw error;
+  }
+}
+
+// The panel-key session lives on /admin/session. A deployment without the
+// route (or without a session) answers with an error, which is not a failure.
+async function probePanelSession(): Promise<SessionOutcome | null> {
+  try {
+    return readSession("key", (await api.get<unknown>("/session")).data);
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      if (error.response?.status === 403) return { kind: "forbidden" };
+      // Transport failures here must not turn an anonymous visitor into an
+      // error page: the SSO probe already reported whether the gateway answers.
+      return null;
+    }
+    throw error;
+  }
+}
+
 export async function establishSession() {
   const generation = ++sessionGeneration;
-  useSession.setState({ status: "checking", csrf: null, user: null, error: null });
+  useSession.setState({ status: "checking", csrf: null, user: null, provider: null, error: null });
   try {
-    const response = await sso.get<unknown>("/session");
+    let outcome = await probeSsoSession();
+    if (!outcome || outcome.kind === "anonymous") {
+      const panel = await probePanelSession();
+      if (panel && panel.kind !== "anonymous") outcome = panel;
+      else if (!outcome) outcome = panel;
+    }
     if (generation !== sessionGeneration) return;
-    const data = object(response.data, "会话");
-    if (data.authenticated === false) {
-      if (data.csrf_token !== null || data.user !== null)
-        throw new Error("未登录会话响应不符合接口契约");
-      useSession.setState({ status: "anonymous", csrf: null, user: null, error: null });
+    if (!outcome || outcome.kind === "anonymous") {
+      useSession.setState({
+        status: "anonymous",
+        csrf: null,
+        user: null,
+        provider: null,
+        error: null,
+      });
       return;
     }
-    if (
-      data.authenticated !== true ||
-      typeof data.csrf_token !== "string" ||
-      !data.csrf_token.trim()
-    )
-      throw new Error("会话响应缺少认证状态或有效的 CSRF token");
-    const user = object(data.user, "管理员身份");
-    if (
-      typeof user.sub !== "string" ||
-      !user.sub.trim() ||
-      (user.username !== undefined && typeof user.username !== "string") ||
-      (user.name !== undefined && typeof user.name !== "string")
-    )
-      throw new Error("会话响应缺少有效的管理员身份");
-    if (user.role !== "admin") {
-      useSession.setState({ status: "forbidden", csrf: null, user: null, error: forbiddenMessage });
+    if (outcome.kind === "forbidden") {
+      useSession.setState({
+        status: "forbidden",
+        csrf: null,
+        user: null,
+        provider: null,
+        error: forbiddenMessage,
+      });
       return;
     }
     useSession.setState({
       status: "authenticated",
-      csrf: data.csrf_token,
-      user: {
-        sub: user.sub,
-        role: "admin",
-        ...(typeof user.username === "string" ? { username: user.username } : {}),
-        ...(typeof user.name === "string" ? { name: user.name } : {}),
-      },
+      csrf: outcome.csrf,
+      user: outcome.user,
+      provider: outcome.provider,
       error: null,
     });
   } catch (error) {
@@ -197,18 +323,79 @@ export async function establishSession() {
       invalidateSession(error, generation);
       return;
     }
-    useSession.setState({ status: "error", csrf: null, user: null, error: errorMessage(error) });
+    useSession.setState({
+      status: "error",
+      csrf: null,
+      user: null,
+      provider: null,
+      error: errorMessage(error),
+    });
   }
 }
+
+// A failed login is not an expired session: the gateway's own reason (wrong
+// key, key login disabled, throttled) is the useful message here.
+function loginErrorText(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const body: unknown = error.response?.data;
+    if (body && typeof body === "object" && "error" in body) {
+      const inner: unknown = (body as RecordValue).error;
+      if (
+        inner &&
+        typeof inner === "object" &&
+        "message" in inner &&
+        typeof (inner as RecordValue).message === "string" &&
+        (inner as RecordValue).message
+      )
+        return (inner as RecordValue).message as string;
+    }
+    if (error.response?.status === 429) return "登录尝试过多，请 10 分钟后重试。";
+  }
+  return errorMessage(error);
+}
+
+// Panel-key login. The browser only holds the session cookie afterwards; the
+// key itself is never stored.
+export async function signInWithKey(key: string) {
+  const generation = ++sessionGeneration;
+  useSession.setState({ status: "checking", csrf: null, user: null, provider: null, error: null });
+  try {
+    const outcome = readSession("key", (await loginApi.post<unknown>("/session", { key })).data);
+    if (generation !== sessionGeneration) return;
+    if (outcome.kind !== "authenticated") throw new Error("登录响应缺少会话信息");
+    useSession.setState({
+      status: "authenticated",
+      csrf: outcome.csrf,
+      user: outcome.user,
+      provider: "key",
+      error: null,
+    });
+  } catch (error) {
+    if (generation !== sessionGeneration) return;
+    useSession.setState({
+      status: "anonymous",
+      csrf: null,
+      user: null,
+      provider: null,
+      error: loginErrorText(error),
+    });
+    throw error;
+  }
+}
+
 export async function endSession() {
-  const { csrf, status } = useSession.getState();
+  const { csrf, status, provider } = useSession.getState();
   if (status !== "authenticated" || !csrf?.trim()) throw new Error("当前会话不可用，请重新登录。");
   const generation = ++sessionGeneration;
   try {
-    await sso.post("/logout", null, { headers: { "X-CSRF-Token": csrf } });
+    // Each method revokes its own session; the CSRF token is the one the
+    // session reported, and both routes demand it.
+    if (provider === "key")
+      await api.delete("/session", { headers: { "X-CSRF-Token": csrf } });
+    else await sso.post("/logout", null, { headers: { "X-CSRF-Token": csrf } });
     if (generation !== sessionGeneration) return;
     sessionGeneration++;
-    useSession.setState({ status: "anonymous", csrf: null, user: null, error: null });
+    useSession.setState({ status: "anonymous", csrf: null, user: null, provider: null, error: null });
   } catch (error) {
     invalidateSession(error, generation);
     throw error;
@@ -216,6 +403,81 @@ export async function endSession() {
 }
 export function updateCsrf(token: string) {
   useSession.setState({ csrf: token });
+}
+
+// ------------------------------------------------ console auth settings (D2.4)
+// The console reads `ssoEnabled` and writes `enabled`, matching the gateway
+// document; the client secret only travels one way and comes back as a flag.
+export type AuthSettings = {
+  ssoEnabled: boolean;
+  keyLoginEnabled: boolean;
+  issuer: string;
+  clientId: string;
+  hasClientSecret: boolean;
+  scope: string;
+  providerName: string;
+  allowedSubjects: string[];
+  allowedEmails: string[];
+  callbackUrl: string;
+};
+export type AuthSettingsPatch = {
+  ssoEnabled?: boolean;
+  keyLoginEnabled?: boolean;
+  issuer?: string;
+  clientId?: string;
+  clientSecret?: string;
+  scope?: string;
+  providerName?: string;
+  allowedSubjects?: string[];
+  allowedEmails?: string[];
+};
+function stringList(value: unknown, context: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string"))
+    throw new Error(`${context}必须是字符串数组`);
+  return value as string[];
+}
+export function authSettingsResponse(value: unknown): AuthSettings {
+  const data = object(value, "认证配置");
+  for (const field of ["ssoEnabled", "keyLoginEnabled", "hasClientSecret"])
+    if (typeof data[field] !== "boolean") throw new Error(`认证配置缺少 ${field}`);
+  for (const field of ["issuer", "clientId", "scope", "providerName", "callbackUrl"])
+    if (typeof data[field] !== "string") throw new Error(`认证配置缺少 ${field}`);
+  return {
+    ssoEnabled: data.ssoEnabled as boolean,
+    keyLoginEnabled: data.keyLoginEnabled as boolean,
+    hasClientSecret: data.hasClientSecret as boolean,
+    issuer: data.issuer as string,
+    clientId: data.clientId as string,
+    scope: data.scope as string,
+    providerName: data.providerName as string,
+    callbackUrl: data.callbackUrl as string,
+    allowedSubjects: stringList(data.allowedSubjects, "管理员 subject 白名单"),
+    allowedEmails: stringList(data.allowedEmails, "管理员邮箱白名单"),
+  };
+}
+// The gateway validates `enabled`; `ssoEnabled` is echoed for readers built
+// against the console shape, and unknown fields are ignored server-side.
+function authSettingsBody(patch: AuthSettingsPatch): RecordValue {
+  const body: RecordValue = {};
+  if (patch.ssoEnabled !== undefined) body.enabled = patch.ssoEnabled;
+  if (patch.keyLoginEnabled !== undefined) body.keyLoginEnabled = patch.keyLoginEnabled;
+  for (const field of [
+    "issuer",
+    "clientId",
+    "clientSecret",
+    "scope",
+    "providerName",
+    "allowedSubjects",
+    "allowedEmails",
+  ] as const)
+    if (patch[field] !== undefined) body[field] = patch[field];
+  return body;
+}
+export async function readAuthSettings(): Promise<AuthSettings> {
+  return authSettingsResponse((await api.get<unknown>("/auth/settings")).data);
+}
+export async function saveAuthSettings(patch: AuthSettingsPatch): Promise<AuthSettings> {
+  return authSettingsResponse((await api.patch<unknown>("/auth/settings", authSettingsBody(patch))).data);
 }
 // Session-level response cache for heavy pages (model routing): reopening the
 // page renders the last snapshot instantly while a fresh fetch replaces it.

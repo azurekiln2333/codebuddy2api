@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { mockSession } from "./sso";
+import { mockAuthConfig, mockSession } from "./sso";
 
 // The console redesign must be verified by painted geometry and by the first
 // frame the browser actually shows, not only by declared CSS values.
@@ -110,12 +110,15 @@ test("first painted frame shows the branded connecting screen and the exact copy
   await expect(boot).toHaveCount(0);
 });
 
-test("desktop login keeps the reference two-column composition with a single SSO action", async ({
+test("desktop login keeps the reference two-column composition with the SSO action", async ({
   page,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await mockSession(page, false);
+  // The reference composition describes the SSO-only layout; the combined
+  // key-and-SSO layout has its own case in sso.spec.ts.
+  await mockAuthConfig(page, { keyLoginEnabled: false });
   await page.setViewportSize(DESKTOP);
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/dashboard/login");
@@ -233,6 +236,7 @@ test("mobile login collapses to one column with the brand kept and no page overf
   page,
 }) => {
   await mockSession(page, false);
+  await mockAuthConfig(page, { keyLoginEnabled: false });
   await page.setViewportSize(MOBILE);
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/dashboard/login");

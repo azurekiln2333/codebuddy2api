@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { adminSession, GATEWAY_CSRF, mockSession } from "./sso";
+import { adminSession, GATEWAY_CSRF, mockAuthConfig, mockSession } from "./sso";
 
 const dashboardPayload = {
   summary: { requests: 3, success_rate: 1, total_tokens: 30, credit: 0 },
@@ -12,8 +12,8 @@ const dashboardPayload = {
   generated_at: 1790812800,
 };
 
-// Gateway contract only: the browser must never request `/admin/session` or
-// handle the original administrative API key during sign-in or sign-out.
+// Gateway contract: an SSO session is read from `/sso/session`, every write
+// carries the gateway CSRF, and sign-out posts to `/sso/logout` with no secret.
 test("SSO session contract: GET /sso/session, gateway CSRF and POST /sso/logout", async ({
   page,
 }) => {
@@ -29,7 +29,7 @@ test("SSO session contract: GET /sso/session, gateway CSRF and POST /sso/logout"
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === "/admin/session")
-      return route.fulfill({ status: 500, json: { error: { message: "legacy endpoint" } } });
+      return route.fulfill({ json: { authenticated: false, csrf_token: null } });
     if (path === "/admin/dashboard") return route.fulfill({ json: dashboardPayload });
     if (["POST", "PATCH", "PUT", "DELETE"].includes(request.method()))
       return route.fulfill({ json: { ok: true } });
@@ -42,7 +42,9 @@ test("SSO session contract: GET /sso/session, gateway CSRF and POST /sso/logout"
   const sessionCall = session.calls.find((call) => call.path === "/sso/session");
   expect(sessionCall).toMatchObject({ method: "GET", csrf: undefined });
   expect(JSON.stringify(sessionCall)).not.toContain("api");
-  expect(adminCalls).not.toContain("GET /admin/session");
+  // The panel-key route is never posted to during an SSO sign-in: the SSO
+  // session answers first, so the key probe is not even needed.
+  expect(adminCalls).not.toContain("POST /admin/session");
   expect(adminCalls.some((call) => call.endsWith("/sso/session"))).toBe(false);
 
   // The rendered identity comes from the gateway session, not from local input.
@@ -78,16 +80,17 @@ test("logging out twice does not reuse the consumed session", async ({ page }) =
   await expect(page.getByRole("link", { name: /统一身份登录/ })).toBeVisible();
 });
 
-test("anonymous session shows the SSO gate without any API key entry", async ({ page }) => {
+test("anonymous session shows the login page with the panel key and the SSO gate", async ({
+  page,
+}) => {
   const session = await mockSession(page, false);
   await page.goto("/dashboard/settings");
   await expect(page).toHaveURL(/\/dashboard\/login$/);
   await expect(page.getByRole("heading", { name: /登录 CodeBuddy2Api/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /统一身份登录/ })).toBeVisible();
-  // No browser-side secret form: the original administrative API key is gone.
+  // The panel key is the console credential; the inference key never appears.
+  await expect(page.getByLabel("面板密钥", { exact: true })).toBeVisible();
   expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
-  expect(await page.locator('input[type="password"]').count()).toBe(0);
-  expect(await page.getByRole("button", { name: /进入工作台/ }).count()).toBe(0);
   for (const call of session.calls) expect(call.path).toBe("/sso/session");
   await page.reload();
   await expect(page).toHaveURL(/\/dashboard\/login$/);
@@ -195,6 +198,84 @@ test("non-admin role in a valid session is denied, not authenticated", async ({ 
   await expect(page.getByRole("link", { name: /使用其他账号登录/ })).toBeVisible();
   expect(await page.getByRole("heading", { name: "运行概览" }).count()).toBe(0);
   await page.unroute("**/sso/session");
+});
+
+test("a key session signs in through /admin/session and out with CSRF", async ({ page }) => {
+  await mockAuthConfig(page, { keyLoginEnabled: true, sso: { enabled: true } });
+  const posts: { method: string; path: string; body: unknown; csrf?: string }[] = [];
+  await page.route("**/admin/session", async (route) => {
+    const request = route.request();
+    const method = request.method();
+    posts.push({
+      method,
+      path: new URL(request.url()).pathname,
+      body: request.postData() ? request.postDataJSON() : null,
+      csrf: request.headers()["x-csrf-token"],
+    });
+    if (method === "POST")
+      return route.fulfill({
+        json: {
+          authenticated: true,
+          csrf_token: "panel-csrf",
+          user: { sub: "panel:key", name: "面板密钥", provider: "key" },
+        },
+      });
+    if (method === "DELETE")
+      return route.fulfill({ json: { authenticated: false } });
+    return route.fulfill({ status: 401, json: { authenticated: false, csrf_token: null } });
+  });
+  await page.route("**/sso/session", (route) =>
+    route.fulfill({ status: 401, json: { authenticated: false, csrf_token: null, user: null } }),
+  );
+  await page.route("**/admin/dashboard", (route) => route.fulfill({ json: dashboardPayload }));
+
+  await page.goto("/dashboard/login");
+  await page.getByLabel("面板密钥", { exact: true }).fill("a-valid-panel-key");
+  await page.getByRole("button", { name: "进入工作台" }).click();
+  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
+  expect(posts.find((call) => call.method === "POST")).toMatchObject({
+    path: "/admin/session",
+    body: { key: "a-valid-panel-key" },
+  });
+
+  await page.getByRole("button", { name: "账号菜单" }).click();
+  await page.getByRole("button", { name: "退出登录" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/login$/);
+  expect(posts.find((call) => call.method === "DELETE")).toMatchObject({
+    path: "/admin/session",
+    csrf: "panel-csrf",
+  });
+});
+
+test("a wrong panel key keeps the console locked with the gateway reason", async ({ page }) => {
+  await page.route("**/sso/session", (route) =>
+    route.fulfill({ status: 401, json: { authenticated: false, csrf_token: null, user: null } }),
+  );
+  await page.route("**/admin/session", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({ status: 401, json: { error: { message: "面板密钥不正确" } } })
+      : route.fulfill({ status: 401, json: { authenticated: false, csrf_token: null } }),
+  );
+  await page.goto("/dashboard/login");
+  await page.getByLabel("面板密钥", { exact: true }).fill("wrong-key-value");
+  await page.getByRole("button", { name: "进入工作台" }).click();
+  await expect(page.getByRole("alert")).toContainText("面板密钥不正确");
+  await expect(page).toHaveURL(/\/dashboard\/login$/);
+  await expect(page.getByRole("heading", { name: "运行概览" })).toHaveCount(0);
+});
+
+test("the login page hides the key field when the gateway disables it", async ({ page }) => {
+  await mockSession(page, false);
+  await mockAuthConfig(page, { keyLoginEnabled: false });
+  await page.goto("/dashboard/login");
+  await expect(page.getByRole("link", { name: /统一身份登录/ })).toBeVisible();
+  expect(await page.getByLabel("面板密钥", { exact: true }).count()).toBe(0);
+});
+
+test("the login page explains an auth_error from the SSO callback", async ({ page }) => {
+  await mockSession(page, false);
+  await page.goto("/dashboard/login?auth_error=not_allowed");
+  await expect(page.getByRole("alert")).toContainText("不在管理员白名单");
 });
 
 test("authenticated session is reused without a login redirect and survives reload", async ({

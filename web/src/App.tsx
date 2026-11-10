@@ -7,7 +7,10 @@ import {
   endSession,
   establishSession,
   errorMessage,
+  loadAuthConfig,
+  signInWithKey,
   SSO_LOGIN_URL,
+  useAuthConfig,
   useSession,
 } from "./api";
 import { Drawer, ErrorNotice, Icon } from "./components";
@@ -49,6 +52,18 @@ const navigationGroups = [
   },
 ];
 const navigation = navigationGroups.flatMap((group) => group.items);
+// The SSO callback returns a machine code; the page explains the ones an
+// operator can act on and shows any other code verbatim.
+const authErrorLabels: Record<string, string> = {
+  access_denied: "单点登录被取消或拒绝，请重试。",
+  invalid_request: "单点登录请求无效，请重试。",
+  invalid_state: "登录状态已失效，请重新发起。",
+  invalid_nonce: "登录校验已失效，请重新发起。",
+  email_unverified: "该账号的邮箱未经提供方验证，无法登录。",
+  not_allowed: "该账号不在管理员白名单中。",
+  discovery_failed: "无法连接单点登录服务，请稍后重试或联系管理员。",
+  sso_disabled: "单点登录未启用，请使用面板密钥登录。",
+};
 function BrandMark() {
   return (
     <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
@@ -360,8 +375,23 @@ function Shell() {
 function Login() {
   const t = useT();
   const { status, error } = useSession();
+  const config = useAuthConfig();
+  const location = useLocation();
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
   if (status === "authenticated") return <Navigate to="/dashboard/" replace />;
   const forbidden = status === "forbidden";
+  // The SSO callback reports failures in the URL; the message must survive the
+  // redirect so the operator knows whether to retry or ask for access.
+  const authError = new URLSearchParams(location.search).get("auth_error");
+  const authErrorText = authError
+    ? authErrorLabels[authError] ?? `单点登录失败（${authError}），请重试。`
+    : null;
+  const ssoLabel =
+    config.sso.providerName && config.sso.providerName !== "SSO"
+      ? `使用 ${config.sso.providerName} 登录`
+      : t("login.ssoSignIn");
+  const ssoHref = `${config.sso.loginUrl || "/sso/login"}?return_to=/dashboard/`;
   return (
     <div className={s.loginShell}>
       <section className={s.loginStory}>
@@ -413,13 +443,54 @@ function Login() {
           </span>
           <span className={s.eyebrow}>{t("login.form.eyebrow")}</span>
           <h2>{forbidden ? t("app.accessDenied") : t("login.codebuddy2apiSignIn")}</h2>
-          <p>{t("login.accessHint")}</p>
-          <ErrorNotice message={error} />
-          <a className={`${s.linkButton} ${s.loginSubmit}`} href={SSO_LOGIN_URL}>
-            <Icon name="shield" size={16} />
-            <span>{forbidden ? t("app.otherAccount") : t("login.ssoSignIn")}</span>
-            <Icon name="arrow" size={16} />
-          </a>
+          <p>
+            {config.keyLoginEnabled && config.sso.enabled
+              ? "使用面板密钥或统一身份登录，仅管理员可访问。"
+              : config.keyLoginEnabled
+                ? "使用面板密钥登录，仅管理员可访问。"
+                : "使用统一身份登录，仅管理员可访问。"}
+          </p>
+          <ErrorNotice message={error ?? authErrorText} />
+          {config.keyLoginEnabled && (
+            <form
+              className={s.grid}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!key.trim() || busy) return;
+                setBusy(true);
+                void signInWithKey(key.trim())
+                  // The store holds the reason; the form only stops being busy.
+                  .catch(() => undefined)
+                  .finally(() => {
+                    setBusy(false);
+                    setKey("");
+                  });
+              }}
+            >
+              <label className={s.field}>
+                面板密钥
+                <input
+                  type="password"
+                  value={key}
+                  autoComplete="current-password"
+                  disabled={busy}
+                  placeholder="PANEL_ADMIN_KEY"
+                  onChange={(event) => setKey(event.target.value)}
+                />
+              </label>
+              <button className={`${s.primary} ${s.loginSubmit}`} disabled={busy || !key.trim()}>
+                <Icon name="shield" size={16} />
+                <span>{t("login.enter")}</span>
+              </button>
+            </form>
+          )}
+          {config.sso.enabled && (
+            <a className={`${s.linkButton} ${s.loginSubmit}`} href={ssoHref}>
+              <Icon name="shield" size={16} />
+              <span>{forbidden ? t("app.otherAccount") : ssoLabel}</span>
+              <Icon name="arrow" size={16} />
+            </a>
+          )}
           {(status === "error" || status === "forbidden") && (
             <button
               type="button"
@@ -460,6 +531,9 @@ export function AppRoutes() {
 }
 export default function App() {
   useEffect(() => {
+    // The public login config decides which methods the login page offers, so
+    // it is loaded alongside the session instead of after it.
+    void loadAuthConfig();
     void establishSession();
   }, []);
   const status = useSession((state) => state.status);

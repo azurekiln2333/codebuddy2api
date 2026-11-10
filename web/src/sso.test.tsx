@@ -3,12 +3,26 @@ import { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from "axios
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { AppRoutes, Guard } from "./App";
-import { api, endSession, establishSession, sso, useSession } from "./api";
+import {
+  api,
+  DEFAULT_AUTH_CONFIG,
+  endSession,
+  establishSession,
+  loadAuthConfig,
+  loginApi,
+  signInWithKey,
+  sso,
+  useAuthConfig,
+  useSession,
+} from "./api";
 
 const admin = { sub: "admin-1", username: "operator", name: "管理员", role: "admin" as const };
 const session = { authenticated: true, csrf_token: "gateway-csrf", user: admin };
 const adminAdapter = api.defaults.adapter;
 const ssoAdapter = sso.defaults.adapter;
+const loginAdapter = loginApi.defaults.adapter;
+const panelUser = { sub: "panel:key", name: "面板密钥", provider: "key" };
+const panelSession = { authenticated: true, csrf_token: "panel-csrf", user: panelUser };
 function response(data: unknown, config: InternalAxiosRequestConfig) {
   return { data, status: 200, statusText: "OK", headers: new AxiosHeaders(), config };
 }
@@ -23,6 +37,7 @@ function authenticate() {
     status: "authenticated",
     csrf: session.csrf_token,
     user: admin,
+    provider: "sso",
     error: null,
   });
 }
@@ -30,7 +45,15 @@ afterEach(() => {
   vi.restoreAllMocks();
   api.defaults.adapter = adminAdapter;
   sso.defaults.adapter = ssoAdapter;
-  useSession.setState({ status: "checking", csrf: null, user: null, error: null });
+  loginApi.defaults.adapter = loginAdapter;
+  useSession.setState({
+    status: "checking",
+    csrf: null,
+    user: null,
+    provider: null,
+    error: null,
+  });
+  useAuthConfig.setState(DEFAULT_AUTH_CONFIG);
 });
 
 describe("gateway SSO contract", () => {
@@ -258,9 +281,63 @@ describe("gateway SSO contract", () => {
 });
 
 describe("SSO entry and access feedback", () => {
-  it("offers only unified identity login and never an API Key field", () => {
+  it("offers the panel key and the SSO button together when both are enabled", async () => {
     useSession.setState({ status: "anonymous" });
+    sso.defaults.adapter = (config) =>
+      config.url === "/config"
+        ? Promise.resolve(
+            response(
+              {
+                keyLoginEnabled: true,
+                sso: { enabled: true, providerName: "统一身份", loginUrl: "/sso/login" },
+              },
+              config,
+            ),
+          )
+        : Promise.reject(httpError(401, config));
+    await loadAuthConfig();
     const { container } = render(
+      <MemoryRouter initialEntries={["/dashboard/login"]}>
+        <AppRoutes />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("link", { name: "使用 统一身份 登录" }).getAttribute("href")).toBe(
+      "/sso/login?return_to=/dashboard/",
+    );
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+    expect(screen.getByRole("button", { name: "进入工作台" })).toBeTruthy();
+    expect(container.textContent).toContain("CodeBuddy2Api");
+  });
+
+  it("hides the key field when the gateway disables key login", async () => {
+    useSession.setState({ status: "anonymous" });
+    sso.defaults.adapter = (config) =>
+      config.url === "/config"
+        ? Promise.resolve(
+            response(
+              {
+                keyLoginEnabled: false,
+                sso: { enabled: true, providerName: "SSO", loginUrl: "/sso/login" },
+              },
+              config,
+            ),
+          )
+        : Promise.reject(httpError(401, config));
+    await loadAuthConfig();
+    const { container } = render(
+      <MemoryRouter initialEntries={["/dashboard/login"]}>
+        <AppRoutes />
+      </MemoryRouter>,
+    );
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(screen.getByRole("link", { name: "使用统一身份登录" })).toBeTruthy();
+  });
+
+  it("keeps the SSO button when the public auth config is unavailable", async () => {
+    useSession.setState({ status: "anonymous" });
+    sso.defaults.adapter = (config) => Promise.reject(httpError(404, config));
+    await loadAuthConfig();
+    render(
       <MemoryRouter initialEntries={["/dashboard/login"]}>
         <AppRoutes />
       </MemoryRouter>,
@@ -268,8 +345,88 @@ describe("SSO entry and access feedback", () => {
     expect(screen.getByRole("link", { name: "使用统一身份登录" }).getAttribute("href")).toBe(
       "/sso/login?return_to=/dashboard/",
     );
-    expect(container.querySelector("form, input")).toBeNull();
-    expect(container.textContent).toContain("CodeBuddy2Api");
+  });
+
+  it("explains an auth_error returned by the SSO callback", () => {
+    useSession.setState({ status: "anonymous" });
+    render(
+      <MemoryRouter initialEntries={["/dashboard/login?auth_error=not_allowed"]}>
+        <AppRoutes />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("不在管理员白名单");
+  });
+
+  it("signs in with the panel key and adopts the returned session", async () => {
+    useSession.setState({ status: "anonymous" });
+    const seen: InternalAxiosRequestConfig[] = [];
+    loginApi.defaults.adapter = (config) => {
+      seen.push(config);
+      return Promise.resolve(response(panelSession, config));
+    };
+    await signInWithKey("a-valid-panel-key");
+    expect(seen[0]).toMatchObject({ baseURL: "/admin", url: "/session", method: "post" });
+    expect(JSON.parse(seen[0].data as string)).toEqual({ key: "a-valid-panel-key" });
+    expect(useSession.getState()).toMatchObject({
+      status: "authenticated",
+      csrf: "panel-csrf",
+      provider: "key",
+      user: panelUser,
+    });
+  });
+
+  it("reports a rejected panel key in Chinese instead of unlocking", async () => {
+    useSession.setState({ status: "anonymous" });
+    loginApi.defaults.adapter = (config) =>
+      Promise.reject(
+        new AxiosError("denied", "ERR_BAD_REQUEST", config, undefined, {
+          ...response({ error: { message: "面板密钥不正确" } }, config),
+          status: 401,
+        }),
+      );
+    await expect(signInWithKey("wrong-key-value")).rejects.toThrow("denied");
+    expect(useSession.getState()).toMatchObject({
+      status: "anonymous",
+      user: null,
+      error: "面板密钥不正确",
+    });
+  });
+
+  it("restores a panel-key session from /admin/session after an anonymous SSO probe", async () => {
+    sso.defaults.adapter = (config) => Promise.reject(httpError(401, config));
+    api.defaults.adapter = (config) =>
+      config.url === "/session"
+        ? Promise.resolve(response(panelSession, config))
+        : Promise.reject(httpError(404, config));
+    await establishSession();
+    expect(useSession.getState()).toMatchObject({
+      status: "authenticated",
+      csrf: "panel-csrf",
+      provider: "key",
+      user: panelUser,
+    });
+  });
+
+  it("logs a panel-key session out through /admin/session with CSRF", async () => {
+    useSession.setState({
+      status: "authenticated",
+      csrf: "panel-csrf",
+      user: panelUser,
+      provider: "key",
+      error: null,
+    });
+    const seen: InternalAxiosRequestConfig[] = [];
+    api.defaults.adapter = (config) => {
+      seen.push(config);
+      return Promise.resolve(response({ authenticated: false }, config));
+    };
+    const ssoCalls = vi.fn();
+    sso.defaults.adapter = ssoCalls;
+    await endSession();
+    expect(seen[0]).toMatchObject({ url: "/session", method: "delete" });
+    expect(seen[0].headers.get("X-CSRF-Token")).toBe("panel-csrf");
+    expect(ssoCalls).not.toHaveBeenCalled();
+    expect(useSession.getState()).toMatchObject({ status: "anonymous", provider: null });
   });
 
   it("removes the protected page and explains revoked admin access", async () => {

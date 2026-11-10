@@ -1,8 +1,8 @@
 import { expect, type Page, type Route } from "@playwright/test";
 
 // Isolated browser fixture for the gateway SSO session contract. The gateway
-// owns `/sso/*`; the browser never talks to `/admin/session` and never handles
-// the original administrative secret.
+// owns `/sso/*`; the browser probes `/admin/session` only to discover an existing
+// panel-key session and never holds an administrative secret.
 export const GATEWAY_CSRF = "mock-csrf";
 export const sessionUser = { sub: "test-admin", role: "admin" as const };
 export const adminSession = {
@@ -10,6 +10,27 @@ export const adminSession = {
   csrf_token: GATEWAY_CSRF,
   user: sessionUser,
 };
+// The public login-page contract (design D2.1). Both methods on by default so a
+// test that only cares about the shell still gets a usable login page.
+export type AuthConfig = {
+  keyLoginEnabled: boolean;
+  sso: { enabled: boolean; providerName: string; loginUrl: string };
+};
+export const defaultAuthConfig: AuthConfig = {
+  keyLoginEnabled: true,
+  sso: { enabled: true, providerName: "SSO", loginUrl: "/sso/login" },
+};
+export async function mockAuthConfig(
+  page: Page,
+  config: { keyLoginEnabled?: boolean; sso?: Partial<AuthConfig["sso"]> } = {},
+) {
+  const body = {
+    keyLoginEnabled: config.keyLoginEnabled ?? defaultAuthConfig.keyLoginEnabled,
+    sso: { ...defaultAuthConfig.sso, ...(config.sso ?? {}) },
+  };
+  await page.route("**/sso/config", (route: Route) => route.fulfill({ json: body }));
+  return body;
+}
 
 export type MockSession = {
   authenticated: boolean;
@@ -25,6 +46,8 @@ export type MockSession = {
 export async function mockSession(page: Page, authenticated = true): Promise<MockSession> {
   const calls: MockSession["calls"] = [];
   let isAuthenticated = authenticated;
+  // Registered first, so a later mockAuthConfig in the test wins (routes are LIFO).
+  await mockAuthConfig(page);
   await page.route("**/sso/session", async (route: Route) => {
     const request = route.request();
     calls.push({

@@ -30,7 +30,7 @@ test("SSO session survives reload and logout returns to the login page", async (
   });
 });
 
-test("session persistence belongs to SSO and the login page collects no credentials", async ({
+test("the login page collects the panel key and keeps session persistence with SSO", async ({
   page,
 }) => {
   await mockAuth(page);
@@ -39,8 +39,10 @@ test("session persistence belongs to SSO and the login page collects no credenti
     "href",
     "/sso/login?return_to=/dashboard/",
   );
-  await expect(page.locator("form, input")).toHaveCount(0);
+  // The console credential is the panel key; the inference key is never asked for.
+  await expect(page.getByLabel("面板密钥", { exact: true })).toHaveAttribute("type", "password");
   await expect(page.getByLabel("记住我", { exact: true })).toHaveCount(0);
+  expect(await page.getByLabel("API key", { exact: true }).count()).toBe(0);
 });
 
 test("SSO sessions never show local bootstrap-password settings", async ({ page }) => {
@@ -52,11 +54,22 @@ test("SSO sessions never show local bootstrap-password settings", async ({ page 
   await expect(page.getByText("当前使用初始密码，请尽快修改。", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("当前管理密码", { exact: true })).toHaveCount(0);
   expect(calls).not.toContain("/admin/account");
-  expect(calls).not.toContain("/admin/session");
+  // The session is read, never established, by a browser that already has one.
+  expect(calls).not.toContain("/admin/password");
 });
 
 test("SSO login renders in light, dark and a single-column mobile layout", async ({ page }) => {
   await mockAuth(page);
+  // SSO-only layout: the key form is covered by its own case below.
+  page.unroute("**/sso/config");
+  await page.route("**/sso/config", (route) =>
+    route.fulfill({
+      json: {
+        keyLoginEnabled: false,
+        sso: { enabled: true, providerName: "SSO", loginUrl: "/sso/login" },
+      },
+    }),
+  );
   await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
   await page.goto("/dashboard/login");
   await expect(page.getByRole("link", { name: "使用统一身份登录" })).toBeVisible();

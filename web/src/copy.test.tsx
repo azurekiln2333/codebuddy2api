@@ -60,7 +60,7 @@ const settings = {
 };
 
 describe("concise user-facing copy", () => {
-  it("offers SSO without accepting an administrative key", () => {
+  it("offers SSO and the panel key without asking for an administrative secret", () => {
     useSession.setState({ status: "anonymous", csrf: null, error: null });
     const { container } = render(
       <MemoryRouter initialEntries={["/dashboard/login"]}>
@@ -71,7 +71,9 @@ describe("concise user-facing copy", () => {
     expect(screen.getByRole("link", { name: /登录/ }).getAttribute("href")).toBe(
       "/sso/login?return_to=/dashboard/",
     );
-    expect(container.querySelector("input, form")).toBeNull();
+    // One credential field, and it is the panel key, not an upstream secret.
+    expect(container.querySelectorAll("input")).toHaveLength(1);
+    expect(screen.getByLabelText("面板密钥")).toBeTruthy();
   });
 
   it("renders titles and empty states without developer explanations", () => {
