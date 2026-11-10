@@ -202,6 +202,12 @@ def validate(patch: Any, previous: Mapping[str, Any] | None = None, *,
         raise AuthSettingsError("请填写认证配置")
     settings = with_defaults(previous if previous is not None else DEFAULT_SSO)
 
+    # The console contract names the switch ``ssoEnabled`` for reads and writes,
+    # as cnb2api-panel and zcode2api do; ``enabled`` is the stored name and stays
+    # accepted. Ignoring ``ssoEnabled`` would save the provider but silently
+    # leave SSO off.
+    if "ssoEnabled" in patch:
+        patch = {**patch, "enabled": patch["ssoEnabled"]}
     for flag in ("enabled", "keyLoginEnabled"):
         if flag in patch:
             if type(patch[flag]) is not bool:

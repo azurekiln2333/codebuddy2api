@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from app import auth_settings, runtime_management
 from app.control_store import ControlStore
-from tests.sso_fixture import FakeIdp, build_sso_app, settings_store
+from tests.sso_fixture import FakeIdp, build_sso_app, settings_store, sso_settings
 
 ORIGIN = {"Origin": "http://localhost"}
 KEY = "panel-admin-key-0123456789"
@@ -96,6 +96,17 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(auth_settings.AuthSettingsError):
                     auth_settings.validate({"enabled": value}, auth_settings.DEFAULT_SSO)
+
+    def test_the_console_switch_name_is_accepted_on_write(self):
+        values = full()
+        del values["enabled"]
+        saved = auth_settings.validate({**values, "ssoEnabled": True}, auth_settings.DEFAULT_SSO)
+        self.assertTrue(saved["enabled"])
+        self.assertTrue(auth_settings.sanitize(saved)["ssoEnabled"])
+        off = auth_settings.validate({"ssoEnabled": False}, saved)
+        self.assertFalse(off["enabled"])
+        with self.assertRaises(auth_settings.AuthSettingsError):
+            auth_settings.validate({"ssoEnabled": "true"}, saved)
 
 
 class AdmissionTests(unittest.TestCase):
@@ -276,6 +287,31 @@ class WiringPersistenceTests(unittest.TestCase):
                 (auth_settings.STORE_NAME, "{not json"))
         store = runtime_management.resolve_auth_settings(self.control, {})
         self.assertFalse(store.current()["enabled"])
+
+
+class HotEnableTests(unittest.TestCase):
+    """A fresh deployment starts with SSO off and enables it from the console.
+
+    The SSO service is installed at startup either way, but the admin boundary
+    used to forget it when SSO was off, so enabling SSO answered 503 until a
+    restart (design R2, D2.4).
+    """
+
+    def test_sso_can_be_enabled_from_the_console_without_a_restart(self):
+        # SSO off at startup means the legacy boundary, which reads the real
+        # control database for its local administrator account.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        control = ControlStore(root / "control.sqlite3")
+        self.addCleanup(control.close)
+        app, _, _ = build_sso_app(FakeIdp(), sso_settings(CODEBUDDY2API_SSO_ENABLED="false"),
+                                  store=settings_store(enabled=False), key=KEY, control=control)
+        with TestClient(app, base_url="http://localhost") as client:
+            self.assertFalse(client.get("/sso/config").json()["sso"]["enabled"])
+            response = client.patch("/admin/auth/settings", json={"ssoEnabled": True},
+                                    headers={"Authorization": f"Bearer {KEY}"})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["ssoEnabled"])
+            self.assertTrue(client.get("/sso/config").json()["sso"]["enabled"])
 
 
 class RouteTests(unittest.TestCase):

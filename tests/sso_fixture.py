@@ -330,10 +330,12 @@ def settings_store(*, subjects=("admin-1",), emails=(), enabled=True, key_login=
 
 
 def build_sso_app(idp: FakeIdp, settings=None, *, gateway=None, extra_routes=None,
-                  store=None, key=""):
+                  store=None, key="", control=None):
     """Assemble a minimal app with native SSO and the SSO-aware admin boundary.
 
     Returns ``(app, service, config)`` so tests can inspect the session store.
+    Pass a real ``control`` store when SSO starts disabled: the legacy boundary
+    then reads its local administrator account at install time.
     """
     from fastapi import FastAPI
     from unittest.mock import Mock
@@ -348,8 +350,9 @@ def build_sso_app(idp: FakeIdp, settings=None, *, gateway=None, extra_routes=Non
     # SSOConfig on the scope (offline_access decides whether refresh happens).
     store = store if store is not None else settings_store(scope=settings.scopes)
     app = FastAPI()
-    control = Mock()
-    control.snapshot.return_value = {"revision": 0, "models": {}, "settings": {}}
+    if control is None:
+        control = Mock()
+        control.snapshot.return_value = {"revision": 0, "models": {}, "settings": {}}
     audit = Mock()
     audit.storage.return_value = {"available": True, "degraded": False, "last_error": None}
     audit.list_records.return_value = {"items": [], "next_cursor": None, "has_more": False}
@@ -371,7 +374,8 @@ def build_sso_app(idp: FakeIdp, settings=None, *, gateway=None, extra_routes=Non
         config["management"] = gateway
     service = install_sso(app, config, client=OidcClient(settings, transport=idp.transport()),
                           store=store)
-    install_admin(app, config, gateway or _Gateway(), sso=service)
+    install_admin(app, config, gateway or _Gateway(),
+                  sso=service if settings.enabled else None)
     if extra_routes:
         extra_routes(app)
     # Outermost, exactly as runtime_management.install adds it.

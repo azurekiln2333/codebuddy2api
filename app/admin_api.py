@@ -277,7 +277,11 @@ def install_admin(app, config, gateway, sso=None, platform_token=""):
         app.add_middleware(AdminMiddleware, auth=auth, dispatch=dispatch,
                            token=platform_token, config=config)
     app.state.admin_auth = auth
-    app.state.sso = sso
+    # The SSO routes are installed even when SSO starts disabled, so the console
+    # can enable it without a restart. Keep that service: replacing it with None
+    # here left the settings route unable to probe or hot-apply a new provider.
+    if sso is not None or getattr(app.state, "sso", None) is None:
+        app.state.sso = sso
     app.state.admin_installed = True
 
     def route(method, path):
