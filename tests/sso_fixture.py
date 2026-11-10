@@ -37,6 +37,8 @@ class FakeIdp:
         is_admin: bool | None = True,
         username: str | None = "ops",
         name: str | None = "Console Operator",
+        email: str | None = None,
+        email_verified: bool = True,
         token_auth_methods: tuple[str, ...] = ("client_secret_basic",),
         signing_alg: str = "RS256",
         discovery_issuer: str | None = None,
@@ -61,6 +63,8 @@ class FakeIdp:
         self.is_admin = is_admin
         self.username = username
         self.name = name
+        self.email = email
+        self.email_verified = email_verified
         self.token_auth_methods = list(token_auth_methods)
         self.signing_alg = signing_alg
         self.discovery_issuer = discovery_issuer or ISSUER
@@ -274,6 +278,9 @@ class FakeIdp:
             body["preferred_username"] = self.username
         if self.name is not None:
             body["name"] = self.name
+        if self.email is not None:
+            body["email"] = self.email
+            body["email_verified"] = self.email_verified
         return httpx.Response(self.userinfo_status, json=body)
 
 
@@ -299,7 +306,31 @@ def sso_settings(**overrides: str):
     return load_sso_config(env)
 
 
-def build_sso_app(idp: FakeIdp, settings=None, *, gateway=None, extra_routes=None):
+def settings_store(*, subjects=("admin-1",), emails=(), enabled=True, key_login=True,
+                   scope="openid profile email roles"):
+    """A console settings document admitting exactly the given identities.
+
+    Admission is an allow-list (design D2.3), so every SSO test needs one; the
+    default matches ``FakeIdp``'s subject so the login flows keep working.
+    """
+    from app import auth_settings
+
+    return auth_settings.SettingsStore(auth_settings.with_defaults({
+        "enabled": enabled,
+        "keyLoginEnabled": key_login,
+        "issuer": ISSUER,
+        "clientId": CLIENT_ID,
+        "clientSecret": CLIENT_SECRET,
+        "scope": scope,
+        "providerName": "Test IdP",
+        "allowedSubjects": list(subjects),
+        "allowedEmails": list(emails),
+        "callbackUrl": "http://localhost/sso/callback",
+    }), allow_local=True)
+
+
+def build_sso_app(idp: FakeIdp, settings=None, *, gateway=None, extra_routes=None,
+                  store=None, key=""):
     """Assemble a minimal app with native SSO and the SSO-aware admin boundary.
 
     Returns ``(app, service, config)`` so tests can inspect the session store.
@@ -309,9 +340,13 @@ def build_sso_app(idp: FakeIdp, settings=None, *, gateway=None, extra_routes=Non
 
     from app.admin_api import install_admin
     from app.sso_auth import install_sso
+    from app.panel_auth import install_panel_key
     from app.sso_oidc import OidcClient
 
     settings = settings or sso_settings()
+    # The store drives the live settings, so it must agree with the injected
+    # SSOConfig on the scope (offline_access decides whether refresh happens).
+    store = store if store is not None else settings_store(scope=settings.scopes)
     app = FastAPI()
     control = Mock()
     control.snapshot.return_value = {"revision": 0, "models": {}, "settings": {}}
@@ -326,16 +361,21 @@ def build_sso_app(idp: FakeIdp, settings=None, *, gateway=None, extra_routes=Non
         "api_key": "synthetic-management-key",
         "admin_allowed_origins": "",
         "sso": settings,
+        "auth_settings": store,
+        "panel_key": key,
         "control_store": control,
         "audit_store": audit,
     }
     if gateway is not None:
         config.update(gateway.config)
         config["management"] = gateway
-    service = install_sso(app, config, client=OidcClient(settings, transport=idp.transport()))
+    service = install_sso(app, config, client=OidcClient(settings, transport=idp.transport()),
+                          store=store)
     install_admin(app, config, gateway or _Gateway(), sso=service)
     if extra_routes:
         extra_routes(app)
+    # Outermost, exactly as runtime_management.install adds it.
+    install_panel_key(app, config, service=None if settings.enabled else service)
     return app, service, config
 
 

@@ -123,21 +123,27 @@ class LoginFlowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"authenticated": False, "csrf_token": None, "user": None})
 
-    def test_non_admin_identity_is_forbidden(self):
-        self.idp.role = "user"
-        response = self.login()
+    def test_identity_outside_the_allow_list_is_forbidden(self):
+        # Admission is an allow-list, so an identity the operator never listed is
+        # refused no matter what the provider claims about its roles (design D2.3).
+        response = self.login(subject="someone-else")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["error"], "forbidden")
         self.assertNotIn(SESSION_COOKIE, self.client.cookies)
 
-    def test_is_admin_false_is_forbidden(self):
+    def test_role_claims_no_longer_decide_admission(self):
+        # role/isAdmin are informational now: the allow-listed subject signs in
+        # regardless of what the provider claims about its roles.
+        self.idp.role = "user"
         self.idp.is_admin = False
-        self.assertEqual(self.login().status_code, 403)
+        self.assertEqual(self.login().status_code, 302)
 
-    def test_live_role_loss_after_login_returns_403(self):
+    def test_unlisted_identity_loses_access_on_the_next_request(self):
         self.assertEqual(self.login().status_code, 302)
         self.assertEqual(self.client.get("/sso/session").status_code, 200)
-        self.idp.role = "user"
+        # Removing the subject from the allow-list revokes access immediately,
+        # without touching the provider's claims.
+        self.service.store.update({"allowedSubjects": ["another-operator"]})
         response = self.client.get("/sso/session")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["error"], "forbidden")

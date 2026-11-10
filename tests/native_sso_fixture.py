@@ -409,6 +409,9 @@ class NativeBackend:
             "OIDC_ISSUER": self.issuer,
             "OIDC_CLIENT_ID": self.client_id,
             "OIDC_CLIENT_SECRET": self.client_secret,
+            # Admission is an allow-list (design D2.3), so the seed must name the
+            # synthetic subject; a bare OIDC block leaves SSO off by design.
+            "CODEBUDDY2API_SSO_ALLOWED_SUBJECTS": ADMIN_SUB,
             "ALLOW_INSECURE_LOCALHOST": "true",
         }
         (work / "auth").mkdir(parents=True, exist_ok=True)

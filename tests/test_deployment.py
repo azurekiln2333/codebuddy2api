@@ -99,7 +99,16 @@ class DeploymentTests(unittest.TestCase):
         self.assertRegex(values["CODEBUDDY2API_IMAGE"],
                          r"^[a-z0-9.-]+/[a-z0-9_.-]+/codebuddy2api:(latest|v?\d+\.\d+\.\d+)$")
         self.assertNotIn("maiphucgiang", values["CODEBUDDY2API_IMAGE"])
-        self.assertEqual(values["CODEBUDDY2API_SSO_ENABLED"], "true")
+        # SSO is configured in the console, so the shipped template keeps it off
+        # and seeds nothing: a missing SSO configuration must not block startup.
+        self.assertEqual(values["CODEBUDDY2API_SSO_ENABLED"], "false")
+        self.assertEqual(values["PUBLIC_ORIGIN"], "")
+        self.assertEqual(values["OIDC_ISSUER"], "")
+        self.assertEqual(values["CODEBUDDY2API_SSO_ALLOWED_SUBJECTS"], "")
+        # The panel key is the one credential a deployment must provide.
+        self.assertIn("PANEL_ADMIN_KEY", values)
+        self.assertEqual(values["PANEL_ADMIN_KEY"], "")
+        self.assertNotIn("PLATFORM_TOKEN", values)
         self.assertEqual(values["ALLOW_INSECURE_LOCALHOST"], "false")
         self.assertEqual(values["CODEBUDDY2API_AUTH_PATH"], "./auth")
         self.assertNotIn("CODEBUDDY2API_AUTO_TRIAL", values)
@@ -314,15 +323,21 @@ class DeploymentTests(unittest.TestCase):
 
     def test_compose_forwards_the_console_login_contract(self):
         compose = (ROOT / "docker-compose.yml").read_text()
-        self.assertIn("CODEBUDDY2API_SSO_ENABLED: ${CODEBUDDY2API_SSO_ENABLED:-true}", compose)
+        # SSO is configured in the console, so the shipped default is off and a
+        # missing OIDC block is never a startup error.
+        self.assertIn("CODEBUDDY2API_SSO_ENABLED: ${CODEBUDDY2API_SSO_ENABLED:-false}", compose)
+        self.assertIn("PANEL_ADMIN_KEY: ${PANEL_ADMIN_KEY:-}", compose)
         for name in ("PUBLIC_ORIGIN", "OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"):
+            self.assertIn(name + ": ${" + name + ":-}", compose)
+        for name in ("CODEBUDDY2API_SSO_ALLOWED_SUBJECTS", "CODEBUDDY2API_SSO_ALLOWED_EMAILS"):
             self.assertIn(name + ": ${" + name + ":-}", compose)
         self.assertIn("OIDC_REFRESH: ${OIDC_REFRESH:-false}", compose)
         self.assertIn("ALLOW_INSECURE_LOCALHOST: ${ALLOW_INSECURE_LOCALHOST:-false}", compose)
         example = (ROOT / ".env.example").read_text()
         for name in ("CODEBUDDY2API_SSO_ENABLED", "PUBLIC_ORIGIN", "OIDC_ISSUER", "OIDC_CLIENT_ID",
                      "OIDC_CLIENT_SECRET", "OIDC_REFRESH", "ALLOW_INSECURE_LOCALHOST",
-                     "WATCHTOWER_POLL_INTERVAL"):
+                     "PANEL_ADMIN_KEY", "CODEBUDDY2API_SSO_ALLOWED_SUBJECTS",
+                     "CODEBUDDY2API_SSO_ALLOWED_EMAILS", "WATCHTOWER_POLL_INTERVAL"):
             self.assertRegex(example, rf"(?m)^#? ?{name}=")
 
     def test_deployment_docs_cover_pull_update_disable_and_rollback(self):

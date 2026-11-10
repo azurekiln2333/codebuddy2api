@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
 
-from app import admin_account, runtime_management
+from app import admin_account, auth_settings, runtime_management
 from app.admin_api import CLEAR_CONFIRMATION
 from app.control_store import ControlStore
 from app.inference_auth import InferenceAuthMiddleware, require_api_key
@@ -140,10 +140,12 @@ class SSOAdminBoundaryTests(unittest.TestCase):
         self.assertNotIn(SESSION_COOKIE, self.client.cookies)
         self.assertEqual(self.client.get("/sso/session").status_code, 401)
 
-    def test_revoked_administrator_loses_management_access_next_request(self):
+    def test_unlisted_identity_loses_management_access_next_request(self):
         csrf = self.login()
         self.assertEqual(self.client.post("/admin/probe", headers={**ORIGIN, "X-CSRF-Token": csrf}).status_code, 200)
-        self.idp.role = "user"
+        # Admission is the allow-list (design D2.3): removing the subject revokes
+        # access immediately, even though the provider still calls them an admin.
+        self.service.store.update({"allowedSubjects": ["another-operator"]})
         self.assertEqual(self.client.post("/admin/probe", headers={**ORIGIN, "X-CSRF-Token": csrf}).status_code, 403)
 
     # -------------------------------------------------------- full log clearing
@@ -296,20 +298,26 @@ class SSONewManagementRoutesTests(unittest.TestCase):
 
 
 class RuntimeWiringTests(unittest.TestCase):
-    def gateway(self, sso):
+    def gateway(self, sso, store=None):
         app = FastAPI()
         config = {"sso": sso, "management": object(), "api_key": "synthetic-management-key",
-                  "control_store": None, "audit_store": None}
+                  "control_store": None, "audit_store": None,
+                  "auth_settings": store or auth_settings.SettingsStore()}
         return SimpleNamespace(app=app, CONFIG=config,
                                __file__=str(Path(__file__).resolve().parents[1] / "converter.py"))
 
-    def test_disabled_sso_installs_only_the_legacy_boundary(self):
+    def test_disabled_sso_installs_the_key_boundary_and_the_legacy_one(self):
+        # SSO routes are always installed so the login page can read the public
+        # contract and the console can enable SSO without a restart; the admin
+        # boundary is still the legacy one because SSO is off at startup.
         gateway = self.gateway(load_sso_config({}))
         with patch.object(runtime_management, "install_admin") as admin, \
                 patch.object(runtime_management, "install_pages"), \
                 patch.object(runtime_management, "install_sso") as sso:
-            self.assertIsNone(runtime_management.install(gateway))
-        sso.assert_not_called()
+            sso.return_value = object()
+            service = runtime_management.install(gateway)
+        sso.assert_called_once()
+        self.assertIsNotNone(service)
         self.assertIsNone(admin.call_args.kwargs["sso"])
 
     def test_enabled_sso_installs_the_service_and_raw_target_guard(self):
@@ -322,6 +330,7 @@ class RuntimeWiringTests(unittest.TestCase):
             "ALLOW_INSECURE_LOCALHOST": "true",
         })
         gateway = self.gateway(settings)
+        gateway.CONFIG["panel_key"] = "panel-admin-key-0123456"
         with patch.object(runtime_management, "install_admin") as admin, \
                 patch.object(runtime_management, "install_pages"), \
                 patch.object(runtime_management, "install_sso") as sso:
@@ -456,20 +465,30 @@ class CsrfOriginContractTests(unittest.TestCase):
 
 
 class StartupFailClosedTests(unittest.TestCase):
-    def test_enabling_sso_without_required_values_aborts_startup(self):
+    def test_missing_sso_configuration_no_longer_blocks_startup(self):
+        # Design D2.6: SSO is configured in the console, so an unset OIDC block is
+        # not a startup error. The process must still refuse to run with a key
+        # login that cannot work, which is what the panel key provides.
         import os
         import subprocess
 
+        from app import auth_settings
+
+        seed = auth_settings.seeded({}, allow_local=False)
+        self.assertIsNone(seed)
+        store = auth_settings.SettingsStore()
+        self.assertFalse(store.current()["enabled"])
+        self.assertTrue(store.current()["keyLoginEnabled"])
+
         root = Path(__file__).resolve().parents[1]
         env = {**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1",
-               "CODEBUDDY2API_SSO_ENABLED": "true", "CODEBUDDY2API_KEY": "synthetic"}
-        # A developer shell may already export part of the OIDC contract.
-        for name in ("PUBLIC_ORIGIN", "OIDC_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"):
+               "CODEBUDDY2API_KEY": "synthetic", "PANEL_ADMIN_KEY": "panel-admin-key-0123456"}
+        for name in ("CODEBUDDY2API_SSO_ENABLED", "PUBLIC_ORIGIN", "OIDC_ISSUER",
+                     "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET"):
             env.pop(name, None)
-        process = subprocess.run([sys.executable, "-B", "converter.py", "--skip-check", "--port", "0"],
+        process = subprocess.run([sys.executable, "-B", "converter.py", "--help"],
                                  cwd=root, env=env, capture_output=True, text=True, timeout=120)
-        self.assertNotEqual(process.returncode, 0)
-        self.assertIn("CODEBUDDY2API_SSO_ENABLED", process.stderr)
+        self.assertEqual(process.returncode, 0, process.stderr)
 
 
 if __name__ == "__main__":
