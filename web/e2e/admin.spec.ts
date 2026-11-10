@@ -173,6 +173,19 @@ async function mockAPI(page: Page, authenticated = true) {
       });
     if (path === "/admin/logs/mock-request") return send(request);
     if (path === "/admin/settings") return send(settings);
+    if (path === "/admin/auth/settings")
+      return send({
+        ssoEnabled: false,
+        keyLoginEnabled: true,
+        issuer: "",
+        clientId: "",
+        hasClientSecret: false,
+        scope: "openid profile email",
+        providerName: "",
+        allowedSubjects: [],
+        allowedEmails: [],
+        callbackUrl: "https://console.example.com/sso/callback",
+      });
     return send({ error: { message: `Unexpected mock request: ${method} ${path}` } }, 500);
   });
   return { calls, getPolls: () => polls };
@@ -214,7 +227,9 @@ test("locked settings stay read-only behind their own tab", async ({ page }) => 
   // Locked rows expose no editable control: the value is shown and editing is deferred.
   await expect(page.getByText("监听端口", { exact: true })).toBeVisible();
   await expect(page.getByText("请在启动配置中修改。")).toBeVisible();
-  await expect(page.locator("input, select")).toHaveCount(0);
+  // The console-auth section above the tabpanel has its own controls; this tab
+  // stays read-only.
+  await expect(page.getByRole("tabpanel").locator("input, select")).toHaveCount(0);
   await page.getByRole("tab", { name: /可修改/ }).click();
   await expect(page.getByLabel("审计明细保留天数")).toBeEnabled();
   await expect(page.getByText("外部锁定", { exact: true })).toHaveCount(0);

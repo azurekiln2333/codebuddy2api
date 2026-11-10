@@ -13,6 +13,7 @@ import {
 import s from "../ui.module.scss";
 import m from "../management.module.scss";
 import { t, useT } from "../i18n";
+import { AuthSettingsPanel } from "../AuthSettings";
 type Setting = {
   key: string;
   value: unknown;
@@ -434,6 +435,7 @@ export function Settings() {
         }
       />
       <ResourceState {...resource} />
+      <AuthSettingsPanel />
       {resource.data && <SettingsForm data={resource.data} reload={resource.reload} />}
     </>
   );

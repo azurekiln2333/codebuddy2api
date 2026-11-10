@@ -126,6 +126,18 @@ async function fixture(page: Page) {
       has_more: false,
       next_cursor: null,
     },
+    "/admin/auth/settings": {
+      ssoEnabled: false,
+      keyLoginEnabled: true,
+      issuer: "",
+      clientId: "",
+      hasClientSecret: false,
+      scope: "openid profile email",
+      providerName: "",
+      allowedSubjects: [],
+      allowedEmails: [],
+      callbackUrl: "https://console.example.com/sso/callback",
+    },
     "/admin/settings": {
       ...mockSettings,
       items: [
