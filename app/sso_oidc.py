@@ -68,6 +68,11 @@ class LiveUserInfo:
     name: str | None = None
     role: str | None = None
     is_admin: bool | None = None
+    # Admission is an allow-list (auth_settings.admits), so the verified e-mail
+    # claim is part of the contract even though the role claims above are now
+    # informational only.
+    email: str | None = None
+    email_verified: bool = False
 
 
 @dataclass
@@ -124,6 +129,21 @@ class OidcClient:
         self._jwks_fetched_at = 0.0
         self._jwks_attempt_at = 0.0
         self._lock = asyncio.Lock()
+
+    def rebind(self, config: SSOConfig, *, transport: httpx.AsyncBaseTransport | None = None,
+               keep_transport: bool = True) -> None:
+        """Point this client at new settings and drop every cached document.
+
+        Used when an operator edits the SSO configuration in the console: the
+        discovery and JWKS caches belong to the previous issuer and must never
+        survive the change, but the injected transport of a test must.
+        """
+        self.config = config
+        if not keep_transport:
+            self._transport = transport
+        self._discovery = None
+        self._jwks_fetched_at = 0.0
+        self._jwks_attempt_at = 0.0
 
     # ------------------------------------------------------------- lifecycle
 
@@ -279,9 +299,15 @@ class OidcClient:
             name=_optional_string(payload.get("name")),
             role=_optional_string(payload.get("role")),
             is_admin=is_admin if isinstance(is_admin, bool) else None,
+            email=_optional_string(payload.get("email")),
+            email_verified=payload.get("email_verified") is True,
         )
 
     # ------------------------------------------------------------- discovery
+
+    async def discover(self):
+        """Run discovery now, so a settings probe fails fast before saving."""
+        return await self._load()
 
     async def _load(self) -> _DiscoveryCache:
         if self._discovery is not None:

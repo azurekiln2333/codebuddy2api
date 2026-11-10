@@ -556,8 +556,9 @@ class AdminAuth:
 
 
 class AdminMiddleware:
-    def __init__(self, app, auth, dispatch=None, token: str = ""):
+    def __init__(self, app, auth, dispatch=None, token: str = "", config=None):
         self.app, self.auth, self.dispatch, self.token = app, auth, dispatch, token
+        self.config = config
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope["path"].startswith("/admin/"):
@@ -565,6 +566,13 @@ class AdminMiddleware:
         if await platform_token.authorize(
                 scope, receive, send, token=self.token, dispatch=self.dispatch, app=self.app):
             return
+        # Once SSO is enabled from the console, the legacy password surface must
+        # stop admitting sessions: the console offers exactly two methods. The
+        # outer panel-key layer has already authorized anything legitimate, so
+        # reaching here means no credential was presented.
+        store = self.config.get("auth_settings") if isinstance(self.config, dict) else None
+        if store is not None and store.current().get("enabled"):
+            return await error_response(401, "管理认证无效或会话已过期")(scope, receive, send)
         request = Request(scope, receive)
 
         renewal = None

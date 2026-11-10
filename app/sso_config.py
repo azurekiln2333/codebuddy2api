@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 ENV_ENABLED = "CODEBUDDY2API_SSO_ENABLED"
@@ -171,3 +171,29 @@ def load(environ: Mapping[str, str] | None = None) -> SSOConfig:
     if config.session_idle_ms > config.session_ttl_ms:
         raise SSOConfigError("SESSION_IDLE_MS 不得大于 SESSION_TTL_MS")
     return config
+
+def from_settings(settings: Mapping[str, Any], *, allow_local: bool = False,
+                  environ: Mapping[str, str] | None = None) -> SSOConfig:
+    """Project a console settings document onto the immutable OIDC config.
+
+    ``public_origin`` may be empty: the service then derives the redirect URI
+    from the request, which is what design D2.3 asks for.
+    """
+    environ = os.environ if environ is None else environ
+    origin = str(settings.get("callbackUrl") or "")
+    if origin.endswith("/sso/callback"):
+        origin = origin[: -len("/sso/callback")]
+    return SSOConfig(
+        enabled=settings.get("enabled") is True,
+        public_origin=origin,
+        oidc_issuer=str(settings.get("issuer") or ""),
+        oidc_client_id=str(settings.get("clientId") or ""),
+        oidc_client_secret=str(settings.get("clientSecret") or ""),
+        oidc_refresh="offline_access" in str(settings.get("scope") or ""),
+        allow_insecure_localhost=allow_local,
+        session_ttl_ms=_integer(environ, "SESSION_TTL_MS", DEFAULT_SESSION_TTL_MS, 60_000, 86_400_000),
+        session_idle_ms=_integer(environ, "SESSION_IDLE_MS", DEFAULT_SESSION_IDLE_MS, 60_000, 86_400_000),
+        transaction_ttl_ms=_integer(environ, "TRANSACTION_TTL_MS", DEFAULT_TRANSACTION_TTL_MS, 10_000, 600_000),
+        max_sessions=_integer(environ, "MAX_SESSIONS", DEFAULT_MAX_SESSIONS, 1, 100_000),
+        oauth_timeout_ms=_integer(environ, "OAUTH_TIMEOUT_MS", DEFAULT_OAUTH_TIMEOUT_MS, 100, 30_000),
+    )

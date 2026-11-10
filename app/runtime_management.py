@@ -6,7 +6,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import buddy
+from . import admin_auth, auth_settings, buddy, panel_key
 from .admin_api import install_admin
 from .platform_token import platform_token_from_env
 from .api_keys import KeyStore
@@ -18,10 +18,11 @@ from .inference_auth import InferenceAuthMiddleware
 from .media_store import MediaStore
 from .model_policy import PolicyScopeMiddleware
 from .observability import AuditMiddleware
+from .panel_auth import install_panel_key
 from .request_target import install_request_target_guard
 from .settings import SCHEMA, apply_persisted_settings
 from .sso_auth import install_sso
-from .sso_config import load as load_sso_config
+from .sso_config import from_settings, load as load_sso_config
 from .updates import Updater
 
 
@@ -71,11 +72,36 @@ class UnavailableAudit:
         pass
 
 
+def resolve_auth_settings(control, environ) -> auth_settings.SettingsStore:
+    """Load the console settings, seeding an unconfigured store from the env once.
+
+    A missing or unusable SSO configuration never blocks startup (design D2.6):
+    the console simply starts with key login enabled and SSO off.
+    """
+    try:
+        saved = auth_settings.load(control)
+    except auth_settings.AuthSettingsError:
+        saved = None
+    overrides = environ.get("ALLOW_INSECURE_LOCALHOST", "")
+    allow_local = str(overrides).strip().lower() in ("1", "true", "yes", "on")
+    store = auth_settings.SettingsStore(saved, control=control if saved is not None else None,
+                                       allow_local=allow_local)
+    if saved is None:
+        seed = auth_settings.seeded(environ, allow_local=allow_local)
+        if seed:
+            store.replace(seed)
+            try:
+                auth_settings.save(control, seed)
+                store = auth_settings.SettingsStore(seed, control=control, allow_local=allow_local)
+            except auth_settings.AuthSettingsError:
+                pass
+    return store
+
+
 def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
     config = gateway.CONFIG
-    # Resolve SSO before any store is opened: a misconfigured SSO deployment must
-    # abort startup instead of serving a weaker authentication surface.
-    config["sso"] = load_sso_config()
+    # SSO is configured from the console now, so startup only projects whatever
+    # is saved. An unset or incomplete configuration is not a startup error.
     config["auto_accept_buddy"] = buddy.auto_accept_from_env(os.environ)
     config["auto_accept_buddy_source"] = "environment" if "CODEBUDDY2API_AUTO_ACCEPT_BUDDY" in os.environ else "default"
     root = gateway.managed_auth_dir()
@@ -87,6 +113,12 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
     except BaseException:
         control.close()
         raise
+    # Console-managed auth settings: key login plus SSO, persisted in the
+    # control database and hot-applied to the running service.
+    config["auth_settings"] = resolve_auth_settings(control, os.environ)
+    config["sso"] = from_settings(config["auth_settings"].current(),
+                                  allow_local=config["auth_settings"].allow_local)
+    config["panel_key"], config["panel_key_source"] = panel_key.key_from_env(os.environ)
     config.update(vars(args))
     config["model_guard"] = not args.no_model_guard
     aliases = {"log": "log_path", "no_model_guard": "model_guard"}
@@ -140,9 +172,16 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
 
 def install(gateway):
     config, app = gateway.CONFIG, gateway.app
+    settings_store = config.get("auth_settings")
     sso = config.get("sso")
-    service = install_sso(app, config) if sso is not None and sso.enabled else None
-    install_admin(app, config, config["management"], sso=service,
+    if sso is None:
+        sso = load_sso_config()
+        config["sso"] = sso
+    # The SSO routes are always installed so the login page can read the public
+    # auth contract and a console-enabled SSO works without a restart.
+    service = install_sso(app, config, store=settings_store)
+    install_admin(app, config, config["management"],
+                  sso=service if sso.enabled else None,
                   platform_token=platform_token_from_env(os.environ))
     app.add_middleware(AuditMiddleware, config=config)
     app.add_middleware(PolicyScopeMiddleware)
@@ -153,9 +192,13 @@ def install(gateway):
     app.add_middleware(InferenceAuthMiddleware, config=config)
     from .request_context import RequestContextMiddleware
     app.add_middleware(RequestContextMiddleware, config=config)
-    if service is not None:
-        # Outermost guard: classify the raw request target before any route or auth work.
-        install_request_target_guard(app)
+    # Outermost: the panel key, then the SSO boundary (or the legacy one when
+    # SSO was off at startup). The OIDC check stays inside the SSO boundary, so
+    # the outer layer only covers the hot-enable case.
+    install_panel_key(app, config, service=None if sso.enabled else service)
+    # Classify the raw request target before any route or auth work. Installed
+    # unconditionally: path smuggling must be refused whatever the credential is.
+    install_request_target_guard(app)
     install_pages(app, Path(gateway.__file__).resolve().parent / "web" / "dist")
     return service
 

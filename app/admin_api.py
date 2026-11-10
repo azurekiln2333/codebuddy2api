@@ -101,6 +101,12 @@ def install_admin(app, config, gateway, sso=None, platform_token=""):
     if getattr(app.state, "admin_installed", False):
         return app.state.admin_auth
     control, audit = config["control_store"], config["audit_store"]
+    if config.get("auth_settings") is None:
+        # Tests and embeddings build a management surface without the console
+        # store; key login then simply stays off and SSO cannot be enabled.
+        from . import auth_settings as _settings
+
+        config["auth_settings"] = _settings.SettingsStore()
     sso_mode = sso is not None
     if sso_mode:
         auth = None
@@ -269,7 +275,7 @@ def install_admin(app, config, gateway, sso=None, platform_token=""):
                            token=platform_token)
     else:
         app.add_middleware(AdminMiddleware, auth=auth, dispatch=dispatch,
-                           token=platform_token)
+                           token=platform_token, config=config)
     app.state.admin_auth = auth
     app.state.sso = sso
     app.state.admin_installed = True
@@ -414,6 +420,89 @@ def install_admin(app, config, gateway, sso=None, platform_token=""):
     if key_store is None and isinstance(getattr(control, "_db", None), sqlite3.Connection):
         key_store = KeyStore(control)
     config["key_store"] = key_store
+
+    # ------------------------------------------------ console auth settings
+    # Authenticated GET/PATCH (design D2.4). The client secret is never
+    # returned, and a saved change is applied to the live service at once.
+    from . import auth_settings as _auth_settings
+
+    def _callback_url(request):
+        settings = config.get("auth_settings")
+        values = settings.current() if settings is not None else {}
+        return values.get("callbackUrl") or f"{str(request.base_url).rstrip('/')}/sso/callback"
+
+    @route("GET", "/admin/auth/config")
+    async def auth_config_get(request):
+        from . import panel_key as _panel_key
+
+        settings = config.get("auth_settings")
+        values = settings.current() if settings is not None else _auth_settings.DEFAULT_SSO
+        return JSONResponse(_panel_key.public_config(
+            values, key_configured=bool(config.get("panel_key"))))
+
+    @route("GET", "/admin/auth/settings")
+    async def auth_settings_get(request):
+        settings = config.get("auth_settings")
+        if settings is None:
+            raise AdminError(503, "认证配置存储未启用")
+        return JSONResponse(_auth_settings.sanitize(settings.current(), _callback_url(request)))
+
+    @route("PATCH", "/admin/auth/settings")
+    async def auth_settings_patch(request):
+        settings = config.get("auth_settings")
+        if settings is None:
+            raise AdminError(503, "认证配置存储未启用")
+        body = await _body(request, 32768)
+        previous = settings.current()
+        # Turning key login off must be proved by an SSO session under the
+        # configuration being saved, otherwise a bad allow-list can lock the
+        # operator out (design D2.5).
+        if previous.get("keyLoginEnabled") and body.get("keyLoginEnabled") is False:
+            identity = request.state.admin_identity if hasattr(request.state, "admin_identity") else ""
+            service = getattr(request.app.state, "sso", None)
+            sso_session = service.resolve(request) if service is not None else None
+            if sso_session is None or not str(identity).startswith("sso:"):
+                raise AdminError(403, "请先通过 SSO 登录验证，再关闭面板密钥登录")
+            try:
+                candidate = _auth_settings.validate(body, previous, allow_local=settings.allow_local)
+            except _auth_settings.AuthSettingsError as error:
+                raise AdminError(400, str(error)) from None
+            if _auth_settings.fingerprint(candidate) != _auth_settings.fingerprint(previous):
+                raise AdminError(403, "SSO 配置已变化，请重新通过 SSO 登录后再关闭面板密钥登录")
+        try:
+            candidate = _auth_settings.validate(body, previous, allow_local=settings.allow_local)
+        except _auth_settings.AuthSettingsError as error:
+            raise AdminError(400, str(error)) from None
+        # Enabling SSO, or changing its identity, must prove discovery works
+        # before the change is saved (design D2.5).
+        needs_discovery = candidate["enabled"] and (
+            not previous["enabled"] or previous["issuer"] != candidate["issuer"]
+            or previous["clientId"] != candidate["clientId"]
+            or (not candidate["keyLoginEnabled"] and previous["keyLoginEnabled"]))
+        if needs_discovery:
+            # Reuses the live client's transport so a test or a proxied deployment
+            # validates against the same channel it will actually use.
+            from .sso_oidc import OidcError
+
+            probe_service = getattr(request.app.state, "sso", None)
+            if probe_service is None:
+                raise AdminError(503, "SSO 服务未启用")
+            try:
+                await probe_service.probe(candidate)
+            except OidcError:
+                raise AdminError(422, "SSO 颁发者不可用或 discovery 校验失败，请检查地址后重试") from None
+        try:
+            saved = settings.update(body)
+        except _auth_settings.AuthSettingsError as error:
+            raise AdminError(400, str(error)) from None
+        service = getattr(request.app.state, "sso", None)
+        if service is not None:
+            service.sync()
+            if not saved["enabled"]:
+                service.revoke_all()
+        event("auth_settings_changed", {"sso_enabled": saved["enabled"],
+                                       "key_login": saved["keyLoginEnabled"]})
+        return JSONResponse(_auth_settings.sanitize(saved, _callback_url(request)))
 
     def key_public(item, *, secret=None, usage=None):
         result = {key: item[key] for key in ("id", "name", "type", "prefix", "enabled", "expires_at",

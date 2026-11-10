@@ -34,7 +34,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from .sso_config import SSOConfig
 from .sso_oidc import OidcClient, OidcError, create_code_verifier, random_token
-from . import platform_token
+from . import auth_settings, platform_token
 
 SESSION_COOKIE = "cb_sso_session"
 TRANSACTION_COOKIE = "cb_sso_txn"
@@ -160,17 +160,91 @@ def _normalize_origin(value: str, *, allow_path: bool) -> tuple[str, str, int] |
 
 
 class SSOService:
-    """Owns the OIDC client, the in-memory session store and CSRF checks."""
+    """Owns the OIDC client, the in-memory session store and CSRF checks.
 
-    def __init__(self, config: SSOConfig, *, client: OidcClient | None = None):
+    When a :class:`auth_settings.SettingsStore` is supplied the service follows
+    the console: every entry point calls :meth:`sync`, which rebinds the OIDC
+    client and drops the discovery cache when the operator changed the provider
+    or the allow-list. That is what makes an SSO change apply without a restart.
+    """
+
+    def __init__(self, config: SSOConfig, *, client: OidcClient | None = None,
+                 store: auth_settings.SettingsStore | None = None):
         self.config = config
+        self.store = store
         self.oidc = client or OidcClient(config)
         self.sessions: dict[str, SSOSession] = {}
         self.transactions: dict[str, LoginTransaction] = {}
+        self._signature = self._config_signature()
         # The frozen SSO contract: browser writes are trusted only from the
         # configured PUBLIC_ORIGIN. The legacy ``admin_allowed_origins`` list is
         # deliberately NOT consulted here, because it must never widen SSO scope.
         self._public_origin = _normalize_origin(config.public_origin, allow_path=False)
+
+    # -------------------------------------------------------------- settings
+
+    async def probe(self, settings: dict) -> None:
+        """Run discovery for candidate settings before they are saved.
+
+        Reuses this client's transport, so a deployment (or a test) that reaches
+        its provider through a specific channel validates against the same one.
+        Raises ``OidcError`` when the provider is unusable.
+        """
+        from .sso_config import from_settings
+        from .sso_oidc import OidcClient
+
+        candidate = OidcClient(
+            from_settings(settings, allow_local=self.config.allow_insecure_localhost),
+            transport=getattr(self.oidc, "_transport", None))
+        try:
+            await candidate.discover()
+        finally:
+            await candidate.aclose()
+
+    def _config_signature(self) -> tuple:
+        return (self.config.enabled, self.config.public_origin, self.config.oidc_issuer,
+                self.config.oidc_client_id, self.config.oidc_client_secret, self.config.scopes,
+                self.store.fingerprint() if self.store is not None else "")
+
+    def sync(self) -> None:
+        """Adopt the console settings if they changed since the last request."""
+        if self.store is None:
+            return
+        from .sso_config import from_settings
+
+        values = self.store.current()
+        projected = from_settings(values, allow_local=self.config.allow_insecure_localhost)
+        signature = (projected.enabled, projected.public_origin, projected.oidc_issuer,
+                     projected.oidc_client_id, projected.oidc_client_secret, projected.scopes,
+                     self.store.fingerprint())
+        if signature == self._signature:
+            return
+        self.config = projected
+        self._public_origin = _normalize_origin(projected.public_origin, allow_path=False)
+        self._signature = signature
+        self.oidc.rebind(projected, keep_transport=True)
+        if not projected.enabled:
+            # Disabling SSO must not leave usable sessions behind.
+            self.revoke_all()
+
+    def current_settings(self) -> dict:
+        """The settings the allow-list is read from.
+
+        A service built without a settings store has no allow-list, so it admits
+        nobody: admission is never inferred from role claims.
+        """
+        if self.store is None:
+            return auth_settings.with_defaults({**auth_settings.DEFAULT_SSO,
+                                                "keyLoginEnabled": False})
+        return self.store.current()
+
+    def redirect_uri(self, request: Request | None = None) -> str:
+        """Public URL when configured, otherwise derived from the request."""
+        if self.config.public_origin:
+            return self.config.redirect_uri
+        if request is None:
+            return self.config.redirect_uri
+        return f"{str(request.base_url).rstrip('/')}/sso/callback"
 
     # ------------------------------------------------------------- lifecycle
 
@@ -182,8 +256,11 @@ class SSOService:
     # ---------------------------------------------------------------- routes
 
     async def login(self, request: Request) -> Response:
+        self.sync()
         if request.method not in ("GET", "HEAD"):
             return _error(405, "method_not_allowed")
+        if not self.config.enabled:
+            return _error(404, "sso_disabled")
         # A fresh login supersedes whatever this browser already holds.
         existing = self._lookup(request)
         if existing is not None:
@@ -203,7 +280,7 @@ class SSOService:
         )
         try:
             target = await self.oidc.build_authorize_url(
-                redirect_uri=self.config.redirect_uri, state=state, nonce=nonce, verifier=verifier,
+                redirect_uri=self.redirect_uri(request), state=state, nonce=nonce, verifier=verifier,
             )
         except OidcError as error:
             self.transactions.pop(state, None)
@@ -213,8 +290,11 @@ class SSOService:
         return response
 
     async def callback(self, request: Request) -> Response:
+        self.sync()
         if request.method not in ("GET", "HEAD"):
             return _error(405, "method_not_allowed")
+        if not self.config.enabled:
+            return _error(404, "sso_disabled")
         cookies = parse_cookies(request.headers.get("cookie"))
         cookie_state = cookies.get(TRANSACTION_COOKIE, "")
         supplied = request.query_params.get("state") or ""
@@ -241,7 +321,7 @@ class SSOService:
 
         try:
             tokens = await self.oidc.exchange_code(
-                code=code, redirect_uri=self.config.redirect_uri, verifier=transaction.verifier,
+                code=code, redirect_uri=self.redirect_uri(request), verifier=transaction.verifier,
             )
         except OidcError:
             response = _error(403, "token_exchange_failed")
@@ -263,14 +343,15 @@ class SSOService:
             self._clear_cookie(response, TRANSACTION_COOKIE)
             return response
 
-        # Live, fail-closed administrator check: the ID token carries no roles.
+        # Allow-list admission (design D2.3): the role claims are informational
+        # only, because only the operator can name the admitted identities.
         try:
             info = await self.oidc.user_info(tokens.access_token)
         except OidcError:
             response = _error(403, "forbidden")
             self._clear_cookie(response, TRANSACTION_COOKIE)
             return response
-        if not _is_admin_identity(info, subject):
+        if not _admits(info, subject, self.current_settings()):
             response = _error(403, "forbidden")
             self._clear_cookie(response, TRANSACTION_COOKIE)
             return response
@@ -285,6 +366,7 @@ class SSOService:
         return response
 
     async def session(self, request: Request) -> Response:
+        self.sync()
         if request.method not in ("GET", "HEAD"):
             return _error(405, "method_not_allowed")
         try:
@@ -298,6 +380,17 @@ class SSOService:
             "csrf_token": session.csrf_token,
             "user": session.public_user(),
         })
+
+    async def public_config(self, request: Request) -> Response:
+        """The unauthenticated login-page contract (design D2.1)."""
+        self.sync()
+        if request.method not in ("GET", "HEAD"):
+            return _error(405, "method_not_allowed")
+        from . import panel_key
+
+        settings = self.current_settings()
+        return _json(200, panel_key.public_config(
+            settings, key_configured=bool(getattr(self, "panel_key", ""))))
 
     async def logout(self, request: Request) -> Response:
         if request.method != "POST":
@@ -317,7 +410,8 @@ class SSOService:
     # ------------------------------------------------------------ authorize
 
     async def authorize(self, request: Request) -> SSOSession:
-        """Resolve, refresh and verify a live administrator session."""
+        """Resolve, refresh and verify a live, allow-listed session."""
+        self.sync()
         session = self._resolve(request)
         if session is None:
             raise SSOAuthError(401, "unauthenticated")
@@ -334,7 +428,7 @@ class SSOService:
         # Re-check full liveness after the network round trip: a concurrent logout
         # or an expiry that elapsed mid-flight must not be forgiven.
         self._assert_live(session)
-        if not _is_admin_identity(info, session.sub):
+        if not _admits(info, session.sub, self.current_settings()):
             raise SSOAuthError(403, "forbidden")
 
         session.user = _project_user(info)
@@ -492,8 +586,13 @@ class SSOService:
         response.delete_cookie(name, path="/", httponly=True, samesite="lax", secure=self.config.cookie_secure)
 
 
-def _is_admin_identity(info: Any, expected_sub: str) -> bool:
-    return info.sub == expected_sub and info.role == "admin" and info.is_admin is True
+def _admits(info: Any, expected_sub: str, settings) -> bool:
+    """The allow-list rule, shared by the callback and every later request."""
+    if info.sub != expected_sub:
+        return False
+    return auth_settings.admits(
+        settings, subject=info.sub, email=info.email or "",
+        email_verified=bool(info.email_verified))
 
 
 def _project_user(info: Any) -> dict[str, Any]:
@@ -502,6 +601,8 @@ def _project_user(info: Any) -> dict[str, Any]:
         user["username"] = info.username
     if info.name:
         user["name"] = info.name
+    if info.email:
+        user["email"] = info.email
     return user
 
 
@@ -591,11 +692,22 @@ def _no_store_send(send):
     return send_wrapper
 
 
-def install_sso(app, config: dict, *, client: OidcClient | None = None) -> SSOService:
-    """Register ``/sso/*`` routes for an SSO-enabled application."""
+def install_sso(app, config: dict, *, client: OidcClient | None = None,
+                store=None) -> SSOService:
+    """Register ``/sso/*`` routes for an SSO-capable application.
+
+    The routes are always installed so the login page can ask for the public
+    auth contract and so enabling SSO from the console takes effect without a
+    restart; each handler answers ``404 sso_disabled`` until SSO is enabled.
+    """
     settings: SSOConfig = config["sso"]
-    service = SSOService(settings, client=client)
+    store = store if store is not None else config.get("auth_settings")
+    service = SSOService(settings, client=client, store=store)
+    # Only tells the login page whether to offer the key field at all.
+    service.panel_key = config.get("panel_key", "")
     app.state.sso = service
+    app.add_api_route("/sso/config", service.public_config, methods=["GET", "HEAD"],
+                      include_in_schema=False)
     app.add_api_route("/sso/login", service.login, methods=["GET", "HEAD"], include_in_schema=False)
     app.add_api_route("/sso/callback", service.callback, methods=["GET", "HEAD"], include_in_schema=False)
     app.add_api_route("/sso/session", service.session, methods=["GET", "HEAD"], include_in_schema=False)
