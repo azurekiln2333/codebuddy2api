@@ -1069,6 +1069,21 @@ def install_admin(app, config, gateway, sso=None, platform_token=""):
                    if key in params}
         if any(len(value) > 256 for value in filters.values()) or len(params.get("cursor", "")) > 2048:
             raise ValueError("日志筛选参数过长")
+        # Aggregated console contract: `account` is a credential id, `key` is an API key id,
+        # and `from`/`to` are epoch seconds mapped onto the store's since/until window.
+        for alias, column in (("account", "credential"), ("key", "api_key")):
+            value = params.get(alias)
+            if value:
+                if len(value) > 256:
+                    raise ValueError("日志筛选参数过长")
+                filters[column] = value
+        for alias, column in (("from", "since"), ("to", "until")):
+            value = params.get(alias)
+            if value:
+                try:
+                    filters[column] = float(value)
+                except ValueError:
+                    raise ValueError("from 与 to 必须为时间戳") from None
         result = await run_in_threadpool(audit.list_records, kind, limit, params.get("cursor"), **filters)
         if result.get("degraded"):
             return error_response(503, "日志暂时无法读取，请检查审计存储状态")

@@ -765,6 +765,25 @@ class AdminApiTests(unittest.TestCase):
         self.audit.clear.assert_called_once_with("all")
         self.assertEqual(self.client.get("/admin/missing", headers=self.headers).status_code, 404)
 
+    def test_logs_accept_the_aggregated_time_account_and_key_filters(self):
+        self.assertEqual(
+            self.client.get("/admin/logs?from=100&to=200&account=acct-1&key=k_synthetic0001&model=m",
+                            headers=self.headers).status_code, 200)
+        self.audit.list_records.assert_called_once_with("request", 50, None, model="m",
+                                                         credential="acct-1", api_key="k_synthetic0001",
+                                                         since=100.0, until=200.0)
+        self.assertEqual(self.client.get("/admin/logs?from=soon", headers=self.headers).status_code, 400)
+        self.assertEqual(self.client.get("/admin/logs?account=" + "a" * 300, headers=self.headers).status_code, 400)
+
+    def test_settings_expose_sensitive_so_consoles_never_render_a_secret_value(self):
+        self.config["settings_sources"] = {}
+        response = self.client.get("/admin/settings", headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        items = {item["key"]: item for item in response.json()["items"]}
+        self.assertTrue(items["api_key"]["sensitive"])
+        self.assertIsNone(items["api_key"]["value"])
+        self.assertFalse(items["max_images"]["sensitive"])
+
     def test_actual_audit_configuration_contract(self):
         from app.audit_store import AuditStore
         real = AuditStore(self.root / "audit.sqlite3")

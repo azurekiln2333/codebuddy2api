@@ -265,7 +265,9 @@ def resolve_settings(config):
             spec["sensitive"] or source in ("cli", "environment", "env", "dotenv"))
         item = {"key": key, "value": None if spec["sensitive"] else (config[key] if config.get(key) is not None else spec["default"]),
                 "stored": None if spec["sensitive"] else saved.get(key), "source": source,
-                "mode": spec["mode"], "type": spec["type"], "label": spec["label"], "locked": locked}
+                "mode": spec["mode"], "type": spec["type"], "label": spec["label"], "locked": locked,
+                # Consoles render a write-only field for a sensitive value that never round-trips.
+                "sensitive": bool(spec["sensitive"])}
         item.update({field: spec[field] for field in ("choices", "min", "max") if field in spec})
         result.append(item)
     return result
