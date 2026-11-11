@@ -37,7 +37,8 @@ ARG BUILD_COMMIT=
 RUN printf '{"channel": "%s", "commit": "%s", "version": "%s"}' "$BUILD_CHANNEL" "$BUILD_COMMIT" "$(cat VERSION)" > build.json
 EXPOSE 8787
 # Listen on container interfaces; host port mapping controls external access.
-ENV CODEBUDDY2API_ALLOW_OPEN_NOAUTH=true
+# Inference stays fail-closed: with no API key created in the console every
+# inference request answers 401, so a mapped port never exposes an open gateway.
 # Liveness probe for Compose and the update service: /health only reports that the application accepts requests.
 # It does not assert account or upstream readiness, so it must never be used to claim an automatic rollback.
 # Kept on one line on purpose: deployment tests parse each Dockerfile line on its own.

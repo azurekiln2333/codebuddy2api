@@ -60,7 +60,6 @@ services:
       OAUTH_TIMEOUT_MS: ${OAUTH_TIMEOUT_MS:-}
       # Optional gateway settings arrive through env_file without locking unset values.
       TZ: ${TZ:-UTC}
-      CODEBUDDY2API_ALLOW_OPEN_NOAUTH: "true"
       CODEBUDDY_AUTH_DIR: /data/auth
     # The image CMD owns the listener flags and prompt adaptation settings.
     restart: unless-stopped

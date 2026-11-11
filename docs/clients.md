@@ -23,7 +23,7 @@ Use an ID from this response or the WebUI; accounts do not necessarily support t
 
 ## API keys and authorization
 
-Standard keys can be named, revealed, copied, rotated, enabled or disabled, and restricted by expiry, IP/CIDR allowlist, per-minute requests and source model IDs. Admin keys are unrestricted and shown only at creation or rotation; only their hashes are stored. An externally configured admin key is read-only in the UI. Every key is valid only for `/v1/*`, never `/admin/*`; standard keys cannot read `/v1/dashboard/billing/*`, while admin keys and explicitly anonymous deployments can.
+Standard keys can be named, revealed, copied, rotated, enabled or disabled, and restricted by expiry, IP/CIDR allowlist, per-minute requests and source model IDs. Admin keys are unrestricted and shown only at creation or rotation; only their hashes are stored. An externally configured admin key is read-only in the UI. Every key is valid only for `/v1/*`, never `/admin/*`; standard keys cannot read `/v1/dashboard/billing/*`, only admin keys can.
 
 | Status / code | Meaning |
 |---------------|---------|
@@ -33,7 +33,7 @@ Standard keys can be named, revealed, copied, rotated, enabled or disabled, and 
 | 403 `admin_key_required` | A standard key attempted to read account-pool billing |
 | 429 `rpm_exceeded` | The key exceeded its 60-second sliding-window limit; honor `Retry-After` |
 
-OpenAI responses use `error.type` and `error.code`; Anthropic uses `authentication_error`, `permission_error` or `rate_limit_error`. With no keys at all, `OPEN_NOAUTH=false` returns `api_key_required`; explicitly enabled anonymous mode accepts missing or placeholder tokens and also exposes billing.
+OpenAI responses use `error.type` and `error.code`; Anthropic uses `authentication_error`, `permission_error` or `rate_limit_error`. With no keys at all every inference request returns 401 `api_key_required`, including missing or placeholder tokens.
 
 ## Codex CLI
 

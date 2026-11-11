@@ -219,12 +219,12 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertEqual(items['responses_projection_mode'], {
             'key': 'responses_projection_mode', 'value': 'passthrough', 'stored': 'passthrough',
             'source': 'management', 'mode': 'hot', 'type': 'string',
-            'label': 'Responses 投影模式', 'locked': False,
+            'label': 'Responses 投影模式', 'locked': False, 'sensitive': False,
             'choices': ['balanced', 'passthrough']})
         self.assertEqual(items['responses_projection_max_bytes'], {
             'key': 'responses_projection_max_bytes', 'value': 0, 'stored': 0,
             'source': 'management', 'mode': 'hot', 'type': 'integer',
-            'label': 'Responses 单项字节上限（0 或 ≥256）', 'locked': False,
+            'label': 'Responses 单项字节上限（0 或 ≥256）', 'locked': False, 'sensitive': False,
             'min': 0, 'max': 33554432})
         _, items, config = self.start({
             'CODEBUDDY2API_RESPONSES_PROJECTION_MODE': 'balanced',

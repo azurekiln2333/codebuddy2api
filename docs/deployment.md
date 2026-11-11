@@ -19,7 +19,7 @@ On first setup, run `cp .env.example .env` and set `CODEBUDDY2API_KEY` to your o
 | `CODEBUDDY2API_AUTH_PATH` | Compose host data directory; defaults to `./auth`, mounted at `/data/auth` |
 | `TZ` | Container time zone; daily guards follow it, and an unset value keeps UTC |
 | `CODEBUDDY2API_ENV_FILE` | Optional Compose override for the env file path; defaults to `.env` |
-| `CODEBUDDY2API_ALLOW_OPEN_NOAUTH` | Image/Compose compatibility opt-in, fixed `true` there. Only with no external or database keys does it anonymously expose inference **and account-pool billing**, with or without a placeholder token; any key row disables it |
+| `CODEBUDDY2API_ALLOW_OPEN_NOAUTH` | Retired and ignored. Inference is fail-closed: with no external or database key every inference request returns 401 `api_key_required` |
 | `CODEBUDDY2API_TRUSTED_PROXIES` | Trusted proxy IPs/CIDRs (comma separated); when the direct peer matches, the audit log records the client from `X-Forwarded-For`/`X-Real-IP` instead of the proxy address |
 | `CODEBUDDY_AUTH_DIR` | Local Python data directory; defaults to the repository's `auth/`. Compose sets it to `/data/auth` inside the container |
 | `CODEBUDDY_IMPORT_DIR` | Optional import directory; defaults to `imports/` under the data directory. Use container paths with Compose |

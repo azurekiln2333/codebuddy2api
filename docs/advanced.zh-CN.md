@@ -198,7 +198,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 直接运行 Python 同样不需要 SSO：控制台以 key 登录、SSO 关闭启动。SSO 关闭时，本地用户名／密码管理账号及其 Cookie 会话接口仍作为内层边界可用；推理 API key 不能授权 `/admin/*`，控制台优先使用 `PANEL_ADMIN_KEY`。外部 `CODEBUDDY2API_KEY` 可作为本地管理账号的初始密码；旧默认 key 会迁移为初始密码及数据库管理密钥。修改本地密码后，登录不再跟随外部密钥变化。`converter.py admin reset-password` 仅恢复本地管理账号，不会重置身份提供方账号。`/health` 不返回账号、路径或异常详情。
 
-**`OPEN_NOAUTH` 匿名模式会同时开放推理和账号池 billing（`/v1/dashboard/billing/*`）。** 仅在没有任何外部密钥和 `api_keys` 记录时生效，缺失或占位 token 都会放行，公网部署绝不可使用。只要存在任意密钥记录，包括停用或过期记录，匿名模式即失效。
+**推理鉴权默认拒绝。** 既没有外部密钥、也没有 `api_keys` 记录时，所有推理请求一律返回 401 `api_key_required`，包括 `/v1/models`、`/v1/dashboard/billing/*` 与占位 token。没有任何环境变量或已保存设置可以恢复无鉴权放行；请在控制台创建密钥（或配置外部密钥）后再使用网关。
 
 普通密钥支持有效期、IP/CIDR 白名单、RPM 和上游模型限制，可再次查看并以明文保存。管理密钥不受限、最多一个，只保存哈希。普通密钥不能读取 billing 或其他密钥的视频任务。公开 `/v1/media/...` 资源在媒体 TTL 到期前始终可读，撤销创建密钥不会将其撤回。
 
@@ -323,8 +323,8 @@ Messages 的 `enabled` / `adaptive` 启用 Chat 推理，`output_config.effort` 
 
 ## 部署暴露与凭据导入
 
-- Compose 默认映射回环地址。对外开放前配置外部密钥或创建数据库密钥，不要把匿名模式当作公网访问方案。
-- **没有任何外部或数据库密钥时，`CODEBUDDY2API_ALLOW_OPEN_NOAUTH=true` 会匿名开放推理和账号池 billing，缺失或占位 token 均可。** 存在任意密钥记录即强制鉴权；没有密钥且开关关闭时，所有推理请求返回 401 `api_key_required`。
+- Compose 默认映射回环地址。对外开放前先在控制台创建数据库密钥，或配置外部密钥。
+- **没有任何外部或数据库密钥时，所有推理请求返回 401 `api_key_required`。** 不存在能够放行未鉴权调用的开关，因此即使映射了端口也不会暴露开放网关。存在任意密钥记录（含停用或过期）只意味着密钥校验已启用。
 - 每个数据目录只运行一个网关进程。其他进程的密钥变更约 1 秒内可见，但 RPM 计数与 `last_used_at` 聚合按进程独立。备份含普通密钥明文，必须按凭证保护。
 - 配置 key 时，生成及 token 估算 POST 在缓冲请求体、预留推理名额之前校验请求头；即使名额已满，无效 key 仍返回 401。其他路由保留原有鉴权和路由行为。
 - 凭据导入/上传在落盘前把 token 别名归一化为官方字段名；严格 JSON 解析拒绝 NaN/Infinity，`expiresAt`/`lastRefreshTime` 必须是合理的有限毫秒时间戳。

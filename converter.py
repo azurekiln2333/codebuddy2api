@@ -3548,7 +3548,7 @@ def billing_subscription(authorization: Optional[str] = Header(default=None),
                          request: Request = None):
     """Expose subscription estimates with balance equal to the hard limit minus usage."""
     principal = _check_auth(request)
-    if principal is not None and principal.type not in ("admin", "anonymous"):
+    if principal is not None and principal.type != "admin":
         raise HTTPException(status_code=403, detail={"error": {
             "message": "普通 API key 无权访问计费接口", "type": "permission_error", "code": "admin_key_required"}})
     t = _billing_totals()
@@ -3581,7 +3581,7 @@ def billing_usage(start_date: Optional[str] = None, end_date: Optional[str] = No
                   request: Request = None):
     """Return estimated usage in cents, with daily model costs for the last 30 days."""
     principal = _check_auth(request)
-    if principal is not None and principal.type not in ("admin", "anonymous"):
+    if principal is not None and principal.type != "admin":
         raise HTTPException(status_code=403, detail={"error": {
             "message": "普通 API key 无权访问计费接口", "type": "permission_error", "code": "admin_key_required"}})
     t = _billing_totals()
@@ -7443,9 +7443,8 @@ def main():
     # The running-instance lease is claimed with the other background threads, after
     # catalog and usage hydration, so an offline tool never races the first write.
     control_store = CONFIG.get("control_store")
-    # Authentication is enforced per request. A missing key locks inference (or enables the
-    # explicit OPEN_NOAUTH compatibility mode) without preventing the management account from
-    # starting on a remote bind.
+    # Authentication is enforced per request. A missing key locks inference without
+    # preventing the management account from starting on a remote bind.
     files = [Path(p) for p in args.auth_file]
     if not files:
         seed_credentials()  # Seed missing desktop credentials into managed storage.

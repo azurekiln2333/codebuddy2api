@@ -19,7 +19,7 @@ Docker 部署需要 **Docker Compose v2**（`docker compose`）。已废弃的 `
 | `CODEBUDDY2API_AUTH_PATH` | Compose 宿主机数据目录；默认 `./auth`，挂载到容器 `/data/auth` |
 | `TZ` | 容器时区；每日任务按它跨天，未设置时保持 UTC |
 | `CODEBUDDY2API_ENV_FILE` | 可选的 Compose 覆盖项，指定 env 文件路径；默认 `.env` |
-| `CODEBUDDY2API_ALLOW_OPEN_NOAUTH` | 镜像与 Compose 的兼容选项，在其中固定为 `true`。仅当没有任何外部或数据库密钥时，无论是否携带占位 token，都会匿名开放推理**及账号池 billing**；存在任意密钥记录即失效 |
+| `CODEBUDDY2API_ALLOW_OPEN_NOAUTH` | 已废弃并忽略。推理鉴权默认拒绝：没有外部或数据库密钥时，所有推理请求返回 401 `api_key_required` |
 | `CODEBUDDY2API_TRUSTED_PROXIES` | 可信代理 IP/CIDR（逗号分隔）；直连地址命中时审计改记 `X-Forwarded-For`/`X-Real-IP` 里的真实客户端地址，而不是代理地址 |
 | `CODEBUDDY_AUTH_DIR` | 本地 Python 数据目录；默认仓库内 `auth/`。Compose 在容器内固定为 `/data/auth` |
 | `CODEBUDDY_IMPORT_DIR` | 可选导入目录；默认数据目录下的 `imports/`。Compose 中请使用容器路径 |

@@ -242,6 +242,26 @@ class AuditStoreTests(unittest.TestCase):
             self.record("w0", started_at=time.time()))["recorded"])
         self.assertFalse(self.store.storage()["degraded"])
 
+    def test_since_until_window_and_api_key_filter_bound_the_page(self):
+        now = time.time()
+        keys = ("k_aaaaaaaaaaaa", "k_aaaaaaaaaaaa", "k_bbbbbbbbbbbb", "k_bbbbbbbbbbbb")
+        for index, (offset, api_key) in enumerate(zip((300, 200, 100, 0), keys)):
+            record = self.record(f"w{index}", started_at=now - offset)
+            record["api_key"] = api_key
+            self.assertTrue(self.store.record_request(record)["recorded"])
+        everything = self.store.list_records("request", 10)
+        self.assertEqual(len(everything["items"]), 4)
+        windowed = self.store.list_records("request", 10, since=now - 250, until=now - 50)
+        self.assertEqual([item["id"] for item in windowed["items"]], ["w2", "w1"])
+        only_recent = self.store.list_records("request", 10, since=now - 150, until=now - 50)
+        self.assertEqual([item["id"] for item in only_recent["items"]], ["w2"])
+        # The aggregated console sends `key` as the API key id and `account` as the credential.
+        by_key = self.store.list_records("request", 10, api_key="k_bbbbbbbbbbbb")
+        self.assertEqual([item["id"] for item in by_key["items"]], ["w3", "w2"])
+        by_credential = self.store.list_records("request", 10, credential="account-fingerprint")
+        self.assertEqual(len(by_credential["items"]), 4)
+        self.assertEqual(self.store.list_records("request", 10, credential="missing-account")["items"], [])
+
     def test_dashboard_view_storm_does_not_drop_traffic_records(self):
         # Regression: parallel dashboard queries used to steal the 250ms write
         # lock budget of live traffic and latch a day of false storage alarms.

@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import os
 import sqlite3
 import tempfile
 import time
@@ -29,7 +30,7 @@ class ApiKeyTests(unittest.TestCase):
         self.control = ControlStore(self.root / "control.sqlite3")
         self.addCleanup(self.control.close)
         self.keys = KeyStore(self.control)
-        self.config = {"api_key": "", "allow_open_noauth": False, "trusted_proxies": ""}
+        self.config = {"api_key": "", "trusted_proxies": ""}
 
     def scope(self, secret=None, *, path="/v1/chat/completions", method="POST", ip="127.0.0.1"):
         headers = [] if secret is None else [(b"authorization", f"Bearer {secret}".encode())]
@@ -38,13 +39,19 @@ class ApiKeyTests(unittest.TestCase):
     def code(self, error):
         return error.detail["error"]["code"]
 
-    def test_empty_and_disabled_sets_control_noauth(self):
+    def test_no_keys_always_rejects_and_no_switch_reopens_it(self):
         with self.assertRaises(ApiKeyError) as missing:
             self.keys.authenticate(self.scope(), self.config)
         self.assertEqual(self.code(missing.exception), "api_key_required")
-        self.config["allow_open_noauth"] = True
-        principal = self.keys.authenticate(self.scope("placeholder"), self.config)
-        self.assertEqual((principal.id, principal.type), ("anonymous", "admin"))
+        # A placeholder token, a stale config flag and the retired environment
+        # switch must all keep the gateway closed.
+        for value in ("true", "1", "yes"):
+            with patch.dict(os.environ, {"CODEBUDDY2API_ALLOW_OPEN_NOAUTH": value}):
+                self.config["allow_open_noauth"] = True
+                with self.assertRaises(ApiKeyError) as denied:
+                    self.keys.authenticate(self.scope("placeholder"), self.config)
+                self.assertEqual(self.code(denied.exception), "api_key_required")
+        self.config.pop("allow_open_noauth")
         disabled, _ = self.keys.create(name="disabled", kind="standard")
         self.keys.update(disabled["id"], 1, {"enabled": False})
         with self.assertRaises(ApiKeyError) as unknown:
@@ -139,7 +146,7 @@ class ApiKeyTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual([item["id"] for item in result.json()["data"]], ["public"])
 
-    def test_billing_requires_admin_or_anonymous_principal(self):
+    def test_billing_requires_an_admin_principal(self):
         import converter
         item, secret = self.keys.create(name="standard", kind="standard")
         self.config.update(control_store=self.control, key_store=self.keys, usage_daily={})
@@ -158,9 +165,11 @@ class ApiKeyTests(unittest.TestCase):
                 self.assertEqual(allowed.status_code, 200, allowed.text)
             converter.CONFIG["api_key"] = ""
             self.keys.delete(item["id"], 1)
-            converter.CONFIG["allow_open_noauth"] = True
-            anonymous = client.get("/v1/dashboard/billing/subscription", headers={"Authorization": "Bearer placeholder"})
-            self.assertEqual(anonymous.status_code, 200, anonymous.text)
+            for authorization in ("Bearer placeholder", "Bearer"):
+                anonymous = client.get("/v1/dashboard/billing/subscription",
+                                       headers={"Authorization": authorization})
+                self.assertEqual(anonymous.status_code, 401, anonymous.text)
+                self.assertEqual(anonymous.json()["error"]["code"], "api_key_required")
 
     def test_anthropic_permission_and_rpm_envelopes(self):
         from app.inference_auth import InferenceAuthMiddleware

@@ -147,7 +147,7 @@ def run(converter, credits_mod, perf_metrics, count, repeat, model):
         control = ControlStore(root / "control.sqlite3")
         keys = KeyStore(control)
         _, secret = keys.create(name="benchmark", kind="standard", rpm=100000)
-        auth_config = {"api_key": "", "allow_open_noauth": False, "trusted_proxies": ""}
+        auth_config = {"api_key": "", "trusted_proxies": ""}
         auth_scope = {"type": "http", "method": "POST", "path": "/v1/chat/completions",
                       "headers": [(b"authorization", f"Bearer {secret}".encode())],
                       "client": ("127.0.0.1", 1234)}

@@ -134,7 +134,7 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
             key = options[matches[0]].dest if len(matches) == 1 else flag[2:].replace("-", "_")
             explicit.add(aliases.get(key, key))
     apply_persisted_settings(config, explicit=explicit)
-    from .startup import allows_open_noauth, resolve_startup_auth
+    from .startup import resolve_startup_auth
     try:
         resolve_startup_auth(config, args, dotenv_keys)
     except BaseException:
@@ -143,14 +143,10 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
     for key in SCHEMA:
         if hasattr(args, key) and key != "api_key":
             setattr(args, key, config[key])
-    config["allow_open_noauth"] = allows_open_noauth()
     config["key_store"] = KeyStore(control)
-    if config.get("api_key") or config["key_store"].has_any():
-        if config["allow_open_noauth"]:
-            print("[auth] 已存在 API key，OPEN_NOAUTH 不生效", file=sys.stderr)
-    elif config["allow_open_noauth"]:
-        print("[auth] 推理接口与账号池额度（billing）匿名开放", file=sys.stderr)
-    else:
+    # Admission is fail-closed: with no external key and no saved key the inference
+    # routes answer 401 api_key_required. No switch re-opens anonymous access.
+    if not config.get("api_key") and not config["key_store"].has_any():
         print("[auth] 尚未创建 API key，请登录 WebUI 创建", file=sys.stderr)
     config["trial_ledger"] = gateway.trial_rewards.TrialLedger(store=control.state)
     try:

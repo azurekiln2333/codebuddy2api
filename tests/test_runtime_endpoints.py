@@ -958,10 +958,11 @@ class ConfigurationTests(unittest.TestCase):
             "admin_allowed_origins": "", "responses_projection_mode": "balanced",
             "responses_projection_max_bytes": 40000})
 
-    def test_open_binding_without_key_starts_and_noauth_only_controls_requests(self):
+    def test_open_binding_without_key_starts_and_stays_fail_closed(self):
         self.configure(flags=("--host", "0.0.0.0"), expected_host="0.0.0.0")
         self.configure(env={"CODEBUDDY2API_ALLOW_OPEN_NOAUTH": "true"}, flags=("--host", "0.0.0.0"),
                        expected_host="0.0.0.0")
+        self.assertNotIn("allow_open_noauth", converter.CONFIG)
         self.configure(env={"CODEBUDDY2API_KEY": "k"}, flags=("--host", "0.0.0.0"), expected_host="0.0.0.0")
 
     def test_persisted_host_is_validated_after_configuration_resolution(self):

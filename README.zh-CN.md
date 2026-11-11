@@ -32,6 +32,8 @@ PANEL_ADMIN_KEY=replace-with-a-random-panel-key
 
 用 `PANEL_ADMIN_KEY` 登录。SSO 为可选项：打开「设置 → 认证」，填写提供方与准入白名单，保存即生效、无需重启。统一部署中，面板调用管理接口时使用的就是这个同一个 `PANEL_ADMIN_KEY`。
 
+推理接口默认拒绝：既没有配置 `CODEBUDDY2API_KEY`、也没有在「密钥管理」创建密钥时，所有 `/v1/*` 请求一律返回 401 `api_key_required`，没有任何开关可以恢复放行。
+
 ```bash
 docker compose pull
 docker compose up -d --no-build

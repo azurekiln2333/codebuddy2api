@@ -25,7 +25,6 @@ _ID = re.compile(r"k_[A-Za-z0-9_-]{12}\Z")
 _SECRET = re.compile(r"cb-[0-9a-f]{32}\Z")
 _NAME = re.compile(r"[^\x00-\x1f\x7f]{1,64}\Z")
 _EXTERNAL_ID = "admin-external"
-_ANONYMOUS_ID = "anonymous"
 api_principal: ContextVar["Principal | None"] = ContextVar("api_principal", default=None)
 
 
@@ -323,10 +322,9 @@ class KeyStore:
         if not token:
             token = headers.get("x-api-key", "")
         external = config.get("api_key") or ""
-        has_any = bool(external) or bool(self._rows)
-        if not has_any:
-            if config.get("allow_open_noauth"):
-                return Principal(_ANONYMOUS_ID, "匿名", "admin")
+        if not external and not self._rows:
+            # Fail closed: no environment variable or saved setting can admit
+            # unauthenticated inference here.
             raise ApiKeyError(401, "尚未创建 API key，请登录 WebUI 创建", "api_key_required")
         if external and hmac.compare_digest(token.encode(), external.encode()):
             return Principal(_EXTERNAL_ID, "外部管理密钥", "admin")

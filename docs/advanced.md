@@ -197,7 +197,7 @@ The console starts with key login enabled and native OAuth2/OIDC off; no OIDC va
 
 Direct Python startup needs no SSO either: the console comes up with key login and SSO off. With SSO off, the legacy local username/password account and its cookie/session endpoints remain available as the inner boundary; inference API keys cannot authorize `/admin/*`, and the console prefers `PANEL_ADMIN_KEY`. The external `CODEBUDDY2API_KEY` can seed the initial local admin password; a legacy default key migrates to an initial password and a database admin key. Password changes decouple local login from later external-key changes. Recover the local password with `converter.py admin reset-password`; this does not reset the identity-provider account. `/health` exposes no account, path or exception details.
 
-**`OPEN_NOAUTH` anonymous mode exposes both inference and account-pool billing (`/v1/dashboard/billing/*`).** It applies only when there is no external key and no `api_keys` row, accepts missing or placeholder tokens, and must never be used for public deployments. Any key row, including disabled or expired rows, disables anonymous mode.
+**Inference admission is fail-closed.** With neither an external key nor an `api_keys` row, every inference request returns 401 `api_key_required`, including `/v1/models`, `/v1/dashboard/billing/*` and placeholder tokens. No environment variable or saved setting re-opens anonymous access; create a key in the console (or configure an external one) to use the gateway.
 
 Standard keys support expiry, IP/CIDR allowlists, RPM and source-model restrictions; they can be revealed and are stored in plaintext. Admin keys are unrestricted, limited to one, and stored only as hashes. Standard keys cannot read billing or access another key's video tasks. Public `/v1/media/...` assets remain available until media TTL expiry even after their creating key is revoked.
 
@@ -322,8 +322,8 @@ Readable history is kept in `reasoning_content`, never ordinary answer text. Res
 
 ## Deployment exposure and credential intake
 
-- Compose maps loopback by default. Configure an external key or create a database key before exposing the port; do not rely on anonymous mode for public access.
-- **With no external or database keys, `CODEBUDDY2API_ALLOW_OPEN_NOAUTH=true` anonymously exposes inference and account-pool billing, with or without a placeholder token.** Any key row forces authentication; with no keys and the option off, every inference request returns 401 `api_key_required`.
+- Compose maps loopback by default. Create a database key in the console, or configure an external key, before exposing the port.
+- **With no external or database keys, every inference request returns 401 `api_key_required`.** There is no switch that admits an unauthenticated caller, so a mapped port never exposes an open gateway. Any key row, including a disabled or expired one, only means the key checks are active.
 - Run one gateway process per data directory. Other-process key changes become visible within about one second, but RPM counters and `last_used_at` aggregation are process-local. Backups contain standard keys in plaintext and must be protected like credentials.
 - When a key is configured, generation and token-count POSTs verify request headers before buffering bodies or reserving inference capacity; invalid keys return 401 even while generation slots are full. Other routes retain their existing authentication and routing behavior.
 - Credential imports/uploads persist the normalized form (token aliases folded into the canonical fields); strict JSON parsing rejects NaN/Infinity, and `expiresAt`/`lastRefreshTime` must be plausible finite millisecond timestamps.

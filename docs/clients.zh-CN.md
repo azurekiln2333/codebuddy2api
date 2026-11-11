@@ -24,7 +24,7 @@ curl http://127.0.0.1:8787/v1/models \
 
 ## API key 与授权
 
-普通密钥支持命名、再次查看、复制、轮换、启停，以及有效期、IP/CIDR 白名单、每分钟请求数和上游模型 ID 限制。管理密钥不受限制，只在创建或轮换时显示一次，库中仅保存哈希。外部管理密钥在界面中只读。所有密钥都只能调用 `/v1/*`，不能访问 `/admin/*`；普通密钥不能读取 `/v1/dashboard/billing/*`，管理密钥和显式匿名部署可以。
+普通密钥支持命名、再次查看、复制、轮换、启停，以及有效期、IP/CIDR 白名单、每分钟请求数和上游模型 ID 限制。管理密钥不受限制，只在创建或轮换时显示一次，库中仅保存哈希。外部管理密钥在界面中只读。所有密钥都只能调用 `/v1/*`，不能访问 `/admin/*`；普通密钥不能读取 `/v1/dashboard/billing/*`，只有管理密钥可以。
 
 | 状态 / 错误码 | 含义 |
 |---------------|------|
@@ -34,7 +34,7 @@ curl http://127.0.0.1:8787/v1/models \
 | 403 `admin_key_required` | 普通密钥尝试读取账号池 billing |
 | 429 `rpm_exceeded` | 超过密钥的 60 秒滑动窗口限制；按 `Retry-After` 等待 |
 
-OpenAI 响应使用 `error.type` 和 `error.code`；Anthropic 使用 `authentication_error`、`permission_error` 或 `rate_limit_error`。没有任何密钥且 `OPEN_NOAUTH=false` 时返回 `api_key_required`；显式开启匿名模式后，缺失或占位 token 都会放行，同时开放 billing。
+OpenAI 响应使用 `error.type` 和 `error.code`；Anthropic 使用 `authentication_error`、`permission_error` 或 `rate_limit_error`。没有任何密钥时，所有推理请求（包括携带缺失或占位 token）均返回 401 `api_key_required`。
 
 ## Codex CLI
 

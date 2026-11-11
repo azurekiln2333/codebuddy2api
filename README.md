@@ -32,6 +32,8 @@ PANEL_ADMIN_KEY=replace-with-a-random-panel-key
 
 Sign in with `PANEL_ADMIN_KEY`. SSO is optional: open **Settings → Authentication**, fill in the provider and the admission allow-list, and the change applies without a restart. In a unified deployment the same `PANEL_ADMIN_KEY` is what the panel uses as its management bearer.
 
+Inference is fail-closed: with neither `CODEBUDDY2API_KEY` nor a key created in **Keys**, every `/v1/*` request answers 401 `api_key_required`, and no switch re-opens it.
+
 ```bash
 docker compose pull
 docker compose up -d --no-build

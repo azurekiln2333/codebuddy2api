@@ -63,11 +63,6 @@ def terminal_stream():
         raise
 
 
-def allows_open_noauth():
-    """Honor the existing explicit unsafe opt-in without overriding a configured key."""
-    return os.environ.get("CODEBUDDY2API_ALLOW_OPEN_NOAUTH", "").lower() in ("1", "true", "yes")
-
-
 def _external_key(config, args, dotenv_keys=()):
     sources = config["settings_sources"]
     for name, spec in SCHEMA.items():
